@@ -4,7 +4,6 @@ import { CallStack } from "./CallStack";
 import { Output } from "./Output";
 import { Controls } from "./Controls";
 import { RecursionTree } from "./RecursionTree";
-import { PredictMode } from "./PredictMode";
 import { runInterpreter } from "../interpreter";
 import type { TraceEvent } from "../interpreter";
 import { PRESET_EXAMPLES } from "../examples/presets";
@@ -12,11 +11,8 @@ import {
   Code2,
   GitBranch,
   Layers,
-  Play,
   Info,
-  Flame,
   X,
-  Crosshair,
   ChevronRight,
   Activity,
 } from "lucide-react";
@@ -39,7 +35,6 @@ export const App: React.FC = () => {
 
   // View state
   const [activeTab, setActiveTab] = useState<"stack" | "tree">("stack");
-  const [isPredictMode, setIsPredictMode] = useState<boolean>(false);
   const [showInfo, setShowInfo] = useState<boolean>(false);
 
   // Resizable Workspace Splitter State
@@ -197,11 +192,6 @@ export const App: React.FC = () => {
     treeNodes: [],
   };
 
-  const nextEvent = currentIndex + 1 < trace.length ? trace[currentIndex + 1] : undefined;
-
-  const totalCalls = trace.filter((e) => e.type === "CALL").length;
-  const maxStackDepth = trace.reduce((max, e) => Math.max(max, e.stack.length), 0);
-
   // Jump to specific frame entry
   const handleSeekFrame = (frameId: string) => {
     const callIdx = trace.findIndex((e) => e.activeFrameId === frameId && e.type === "CALL");
@@ -245,38 +235,6 @@ export const App: React.FC = () => {
               <Info className="icon-xs" />
             </button>
           </div>
-        </div>
-
-        {/* Action Toggles & Stats */}
-        <div className="navbar-actions">
-          <div className="stats-strip">
-            <span className="stat-pill" title="Total recursive calls">
-              <span>Calls:</span> <strong>{totalCalls}</strong>
-            </span>
-            <span className="stat-pill" title="Maximum call stack depth">
-              <span>Depth:</span> <strong>{maxStackDepth}</strong>
-            </span>
-          </div>
-
-          <button
-            className={`btn-mode ${isPredictMode ? "active" : ""}`}
-            onClick={() => setIsPredictMode(!isPredictMode)}
-            id="btn-predict-mode"
-            title="Step checkpoint mode"
-          >
-            <Crosshair className="icon-xs" />
-            <span>Checkpoint Mode</span>
-          </button>
-
-          <button
-            className="btn btn-primary"
-            onClick={() => executeTrace(code)}
-            id="btn-run-trace"
-            title="Re-run trace (Cmd+Enter)"
-          >
-            <Play className="icon-xs" />
-            <span>Run Trace</span>
-          </button>
         </div>
       </header>
 
@@ -421,15 +379,6 @@ export const App: React.FC = () => {
               onSpeedChange={setSpeed}
             />
           </div>
-
-          {/* Checkpoint Banner */}
-          {isPredictMode && (
-            <PredictMode
-              currentEvent={currentEvent}
-              nextEvent={nextEvent}
-              onAdvance={handleNext}
-            />
-          )}
 
           {/* Visualizer Panels: Tabbed Header */}
           <div className="visualizer-card">

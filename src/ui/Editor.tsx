@@ -36,18 +36,19 @@ export const Editor: React.FC<EditorProps> = ({
         { token: "type", foreground: "2ac3de" },
         { token: "string", foreground: "9ece6a" },
         { token: "number", foreground: "ff9e64" },
-        { token: "comment", foreground: "565f89", fontStyle: "italic" },
+        { token: "comment", foreground: "6b7280", fontStyle: "italic" },
         { token: "identifier", foreground: "c0caf5" },
         { token: "delimiter", foreground: "bb9af7" },
       ],
       colors: {
-        "editor.background": "#0e131f",
-        "editor.foreground": "#c0caf5",
-        "editorLineNumber.foreground": "#414868",
-        "editorLineNumber.activeForeground": "#7aa2f7",
-        "editor.selectionBackground": "#283457",
-        "editor.lineHighlightBackground": "#161d2d",
-        "editorCursor.foreground": "#7aa2f7",
+        "editor.background": "#141416",
+        "editorGutter.background": "#141416",
+        "editor.foreground": "#e4e4e7",
+        "editorLineNumber.foreground": "#52525b",
+        "editorLineNumber.activeForeground": "#a1a1aa",
+        "editor.selectionBackground": "#27272f",
+        "editor.lineHighlightBackground": "#1c1c20",
+        "editorCursor.foreground": "#f4f4f5",
       },
     });
 
@@ -102,7 +103,8 @@ export const Editor: React.FC<EditorProps> = ({
         value={code}
         onChange={(val) => onChange(val || "")}
         onMount={handleEditorDidMount}
-        theme="vs-dark"
+        theme="recursionDark"
+        loading={<div style={{ height: "100%", background: "#141416" }} />}
         options={{
           fontSize: 14,
           fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",

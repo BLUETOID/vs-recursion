@@ -483,6 +483,7 @@ body {
   flex-direction: column;
   min-height: 120px;
   overflow: hidden;
+  background-color: #141416;
 }
 
 .card-header {
@@ -536,10 +537,12 @@ body {
 .editor-wrapper {
   flex: 1;
   min-height: 0;
+  background-color: #141416;
 }
 
 .editor-container {
   height: 100%;
+  background-color: #141416;
 }
 
 /* Console / Output */
@@ -878,97 +881,6 @@ body {
 .speed-select option {
   background-color: var(--bg-surface);
   color: var(--text-main);
-}
-
-/* ==========================================================================
-   Checkpoint / Diagnostic Card
-   ========================================================================== */
-
-.predict-mode-card {
-  margin: 10px 16px 0 16px;
-  padding: 10px 14px;
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-card);
-  border-radius: var(--radius-sm);
-  flex-shrink: 0;
-}
-
-.predict-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-.predict-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  font-size: 0.78rem;
-  color: var(--text-main);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.predict-score {
-  font-size: 0.72rem;
-  font-family: var(--font-mono);
-  color: var(--text-muted);
-}
-
-.predict-question .q-text {
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: var(--text-main);
-  margin-bottom: 8px;
-}
-
-.predict-input-row {
-  display: flex;
-  gap: 6px;
-}
-
-.predict-input {
-  flex: 1;
-  background-color: var(--bg-base);
-  border: 1px solid var(--border-card);
-  border-radius: var(--radius-xs);
-  padding: 4px 10px;
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: var(--text-main);
-  outline: none;
-}
-
-.predict-input:focus {
-  border-color: var(--accent-blue);
-}
-
-.predict-feedback {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: var(--radius-xs);
-}
-
-.predict-feedback.correct {
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.3);
-}
-
-.predict-feedback.incorrect {
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-}
-
-.feedback-content {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
 }
 
 /* ==========================================================================
