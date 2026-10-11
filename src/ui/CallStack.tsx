@@ -35,7 +35,7 @@ export const CallStack: React.FC<CallStackProps> = ({
     <div className="call-stack-panel" id="call-stack-panel">
       <div className="panel-header">
         <div className="panel-title">
-          <Layers className="icon-sm text-blue" />
+          <Layers className="icon-sm text-muted" />
           <span>Call Stack</span>
           <span className="badge-count">{stack.length} frames</span>
           {staticEntries.length > 0 && (

@@ -215,8 +215,11 @@ export const App: React.FC = () => {
       {/* Top Navigation Bar: Minimalist developer toolbar */}
       <header className="navbar">
         <div className="navbar-left">
-          <div className="brand-icon-wrapper" title="C++ Trace Visualizer">
-            <GitBranch className="icon-sm text-blue" />
+          <div className="brand-logo-area">
+            <div className="brand-icon-wrapper" title="VS-Recursion Visualizer">
+              <GitBranch className="icon-sm" />
+            </div>
+            <span className="brand-title">VS-Recursion</span>
           </div>
 
           <div className="preset-selector-group">
@@ -247,13 +250,11 @@ export const App: React.FC = () => {
         {/* Action Toggles & Stats */}
         <div className="navbar-actions">
           <div className="stats-strip">
-            <span className="stat-pill" title="Total calls invoked">
-              <Flame className="icon-xs text-amber" />
-              <span>Calls: <strong>{totalCalls}</strong></span>
+            <span className="stat-pill" title="Total recursive calls">
+              <span>Calls:</span> <strong>{totalCalls}</strong>
             </span>
-            <span className="stat-pill" title="Max recursion depth">
-              <Layers className="icon-xs text-cyan" />
-              <span>Depth: <strong>{maxStackDepth}</strong></span>
+            <span className="stat-pill" title="Maximum call stack depth">
+              <span>Depth:</span> <strong>{maxStackDepth}</strong>
             </span>
           </div>
 
@@ -295,7 +296,7 @@ export const App: React.FC = () => {
       {/* Step Narration Bar: Pedagogical Clarity Strip */}
       <div className="narration-strip" id="step-narration-strip">
         <div className="narration-meta">
-          <Activity className="icon-xs text-blue" />
+          <Activity className="icon-xs text-muted" />
           <span className="narration-step-label">Step {trace.length > 0 ? currentIndex + 1 : 0}:</span>
           <span
             className={`narration-badge ${
@@ -344,7 +345,7 @@ export const App: React.FC = () => {
           <div className="editor-card" style={{ height: `calc(100% - ${consoleHeight}px - 6px)` }}>
             <div className="card-header">
               <div className="card-title">
-                <Code2 className="icon-xs text-blue" />
+                <Code2 className="icon-xs text-muted" />
                 <span>main.cpp</span>
               </div>
               <div className="editor-meta">
@@ -384,11 +385,6 @@ export const App: React.FC = () => {
             <Output
               output={currentEvent.output}
               error={runtimeError || currentEvent.message}
-              currentEvent={currentEvent}
-              totalCalls={totalCalls}
-              maxStackDepth={maxStackDepth}
-              currentIndex={currentIndex}
-              totalSteps={trace.length}
             />
           </div>
         </div>
