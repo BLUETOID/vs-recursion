@@ -4,6 +4,17 @@ export const TokenType = {
   BOOL: "BOOL",
   VOID: "VOID",
   CHAR: "CHAR",
+  DOUBLE: "DOUBLE",
+  FLOAT: "FLOAT",
+  LONG: "LONG",
+  UNSIGNED: "UNSIGNED",
+  STRING_TYPE: "STRING_TYPE",
+  AUTO: "AUTO",
+  STATIC: "STATIC",
+  CONST: "CONST",
+  INLINE: "INLINE",
+  BREAK: "BREAK",
+  CONTINUE: "CONTINUE",
   IF: "IF",
   ELSE: "ELSE",
   FOR: "FOR",
@@ -28,6 +39,12 @@ export const TokenType = {
   PERCENT: "PERCENT",         // %
   PLUS_PLUS: "PLUS_PLUS",     // ++
   MINUS_MINUS: "MINUS_MINUS", // --
+  AMP: "AMP",                 // &
+  PIPE: "PIPE",               // |
+  CARET: "CARET",             // ^
+  TILDE: "TILDE",             // ~
+  QUESTION: "QUESTION",       // ?
+  COLON: "COLON",             // :
 
   // Comparison
   EQ_EQ: "EQ_EQ",             // ==

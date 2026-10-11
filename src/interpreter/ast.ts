@@ -11,6 +11,8 @@ export interface Parameter extends BaseNode {
   type: "Parameter";
   paramType: string;
   name: string;
+  isConst?: boolean;
+  isRef?: boolean;
 }
 
 export interface FunctionDeclaration extends BaseNode {
@@ -19,6 +21,8 @@ export interface FunctionDeclaration extends BaseNode {
   name: string;
   params: Parameter[];
   body: BlockStatement;
+  isStatic?: boolean;
+  isInline?: boolean;
 }
 
 export interface VariableDeclaration extends BaseNode {
@@ -26,6 +30,8 @@ export interface VariableDeclaration extends BaseNode {
   varType: string;
   name: string;
   init?: Expression;
+  isStatic?: boolean;
+  isConst?: boolean;
 }
 
 export type Statement =
@@ -35,9 +41,19 @@ export type Statement =
   | WhileStatement
   | ForStatement
   | ReturnStatement
+  | BreakStatement
+  | ContinueStatement
   | CoutStatement
   | ExpressionStatement
   | EmptyStatement;
+
+export interface BreakStatement extends BaseNode {
+  type: "BreakStatement";
+}
+
+export interface ContinueStatement extends BaseNode {
+  type: "ContinueStatement";
+}
 
 export interface BlockStatement extends BaseNode {
   type: "BlockStatement";
@@ -59,7 +75,7 @@ export interface WhileStatement extends BaseNode {
 
 export interface ForStatement extends BaseNode {
   type: "ForStatement";
-  init?: VariableDeclaration | ExpressionStatement | null;
+  init?: VariableDeclaration | ExpressionStatement | Statement | null;
   condition?: Expression | null;
   update?: Expression | null;
   body: Statement;
@@ -94,8 +110,16 @@ export type Expression =
   | UnaryExpression
   | UpdateExpression
   | AssignmentExpression
+  | ConditionalExpression
   | CallExpression
   | EndlExpression;
+
+export interface ConditionalExpression extends BaseNode {
+  type: "ConditionalExpression";
+  condition: Expression;
+  consequent: Expression;
+  alternate: Expression;
+}
 
 export interface NumberLiteral extends BaseNode {
   type: "NumberLiteral";

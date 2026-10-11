@@ -1,5 +1,5 @@
 import React from "react";
-import type { Frame, EventType } from "../interpreter";
+import type { Frame, EventType, StaticVarInfo } from "../interpreter";
 import {
   Layers,
   ArrowDown,
@@ -7,6 +7,8 @@ import {
   CornerDownLeft,
   Cpu,
   CornerDownRight,
+  Database,
+  Lock,
 } from "lucide-react";
 
 interface CallStackProps {
@@ -15,6 +17,7 @@ interface CallStackProps {
   direction?: "DOWN" | "UP";
   returnValue?: any;
   isBaseCase?: boolean;
+  staticVars?: Record<string, StaticVarInfo>;
 }
 
 export const CallStack: React.FC<CallStackProps> = ({
@@ -23,8 +26,10 @@ export const CallStack: React.FC<CallStackProps> = ({
   direction,
   returnValue,
   isBaseCase,
+  staticVars,
 }) => {
   const reversedStack = [...stack].reverse();
+  const staticEntries = Object.entries(staticVars || {});
 
   return (
     <div className="call-stack-panel" id="call-stack-panel">
@@ -33,6 +38,11 @@ export const CallStack: React.FC<CallStackProps> = ({
           <Layers className="icon-sm text-blue" />
           <span>Call Stack</span>
           <span className="badge-count">{stack.length} frames</span>
+          {staticEntries.length > 0 && (
+            <span className="badge-count badge-amber" title="Static variables alive in memory">
+              {staticEntries.length} static
+            </span>
+          )}
         </div>
         {direction && (
           <div className={`direction-indicator ${direction.toLowerCase()}`}>
@@ -51,6 +61,27 @@ export const CallStack: React.FC<CallStackProps> = ({
         )}
       </div>
 
+      {/* Global & Function Static Memory Strip */}
+      {staticEntries.length > 0 && (
+        <div className="static-memory-strip" id="static-memory-strip">
+          <div className="static-strip-header">
+            <Database className="icon-xs text-amber" />
+            <span className="static-strip-title">Static Storage (Shared Across All Frames):</span>
+          </div>
+          <div className="static-chips-list">
+            {staticEntries.map(([key, info]) => (
+              <div key={key} className="static-memory-chip" title="Persists in memory across recursion">
+                <span className="static-chip-scope">{info.fnName ? `${info.fnName}::` : "global::"}</span>
+                <span className="static-chip-name">{info.name}</span>
+                <span className="chip-separator">=</span>
+                <span className="static-chip-val">{JSON.stringify(info.value)}</span>
+                {info.isConst && <span className="chip-const-tag">CONST</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="frames-container">
         {reversedStack.length === 0 ? (
           <div className="empty-stack">
@@ -62,7 +93,10 @@ export const CallStack: React.FC<CallStackProps> = ({
             const isTop = index === 0;
             const hasArgs = Object.keys(frame.args).length > 0;
             const hasLocals = Object.keys(frame.locals).length > 0;
+            const frameStatics = frame.staticVars ? Object.entries(frame.staticVars) : [];
+            const hasStatics = frameStatics.length > 0;
             const isReturning = isTop && eventType === "RETURN";
+            const constSet = new Set(frame.constVars || []);
 
             return (
               <div
@@ -110,12 +144,36 @@ export const CallStack: React.FC<CallStackProps> = ({
                 )}
 
                 <div className="frame-details">
+                  {/* Static variables accessible in this function */}
+                  {hasStatics && (
+                    <div className="var-group">
+                      <span className="var-group-label text-amber">
+                        <Database className="icon-xs inline-icon" /> static:
+                      </span>
+                      <div className="var-chips">
+                        {frameStatics.map(([k, v]) => (
+                          <div key={k} className="var-chip static-chip" title="Shared static variable across all calls">
+                            <span className="chip-badge-static">STATIC</span>
+                            <span className="chip-key">{k}</span>
+                            <span className="chip-separator">=</span>
+                            <span className="chip-val text-amber">{JSON.stringify(v)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {hasArgs && (
                     <div className="var-group">
                       <span className="var-group-label">args:</span>
                       <div className="var-chips">
                         {Object.entries(frame.args).map(([k, v]) => (
                           <div key={k} className="var-chip arg-chip">
+                            {constSet.has(k) && (
+                              <span title="Const parameter">
+                                <Lock className="icon-xs text-amber" />
+                              </span>
+                            )}
                             <span className="chip-key">{k}</span>
                             <span className="chip-separator">=</span>
                             <span className="chip-val">{JSON.stringify(v)}</span>
@@ -131,6 +189,11 @@ export const CallStack: React.FC<CallStackProps> = ({
                       <div className="var-chips">
                         {Object.entries(frame.locals).map(([k, v]) => (
                           <div key={k} className="var-chip local-chip">
+                            {constSet.has(k) && (
+                              <span title="Const variable">
+                                <Lock className="icon-xs text-amber" />
+                              </span>
+                            )}
                             <span className="chip-key">{k}</span>
                             <span className="chip-separator">=</span>
                             <span className="chip-val">{JSON.stringify(v)}</span>
@@ -148,3 +211,4 @@ export const CallStack: React.FC<CallStackProps> = ({
     </div>
   );
 };
+

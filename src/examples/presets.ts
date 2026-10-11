@@ -250,4 +250,46 @@ int main() {
 }
 `,
   },
+  {
+    id: "static_var",
+    name: "13. Static Variable in Recursion",
+    category: "Basic",
+    description: "Demonstrates local static memory persistence across recursive frames.",
+    explanation: "static int x = 0 is initialized only once. As calls descend, x increments across calls. On return unwinding, every frame accesses the shared static variable.",
+    code: `#include <iostream>
+using namespace std;
+
+int fun(int n) {
+    static int x = 0;
+    if (n > 0) {
+        x++;
+        return fun(n - 1) + x;
+    }
+    return 0;
+}
+
+int main() {
+    cout << fun(5);
+}
+`,
+  },
+  {
+    id: "const_ternary",
+    name: "14. Const & Ternary Operator",
+    category: "Math",
+    description: "Clean recursive logic using const variables and ternary operator.",
+    explanation: "Employs const immutability and ternary base case branch for idiomatic recursion.",
+    code: `#include <iostream>
+using namespace std;
+
+int fact(const int n) {
+    return (n <= 1) ? 1 : n * fact(n - 1);
+}
+
+int main() {
+    const int num = 5;
+    cout << fact(num);
+}
+`,
+  },
 ];

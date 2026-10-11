@@ -30,7 +30,8 @@ export class Parser {
     const startLine = this.peek().line;
 
     while (!this.isAtEnd()) {
-      declarations.push(this.parseTopLevelDeclaration());
+      const decls = this.parseTopLevelDeclarations();
+      declarations.push(...decls);
     }
 
     return {
@@ -45,31 +46,67 @@ export class Parser {
       token.type === TokenType.INT ||
       token.type === TokenType.BOOL ||
       token.type === TokenType.VOID ||
-      token.type === TokenType.CHAR
+      token.type === TokenType.CHAR ||
+      token.type === TokenType.DOUBLE ||
+      token.type === TokenType.FLOAT ||
+      token.type === TokenType.LONG ||
+      token.type === TokenType.UNSIGNED ||
+      token.type === TokenType.STRING_TYPE ||
+      token.type === TokenType.AUTO
     );
   }
 
-  private parseTopLevelDeclaration(): FunctionDeclaration | VariableDeclaration {
+  private isModifierToken(token: Token): boolean {
+    return (
+      token.type === TokenType.STATIC ||
+      token.type === TokenType.CONST ||
+      token.type === TokenType.INLINE
+    );
+  }
+
+  private parseTopLevelDeclarations(): (FunctionDeclaration | VariableDeclaration)[] {
+    let isStatic = false;
+    let isConst = false;
+    let isInline = false;
+
+    while (this.isModifierToken(this.peek())) {
+      const mod = this.advance();
+      if (mod.type === TokenType.STATIC) isStatic = true;
+      if (mod.type === TokenType.CONST) isConst = true;
+      if (mod.type === TokenType.INLINE) isInline = true;
+    }
+
     if (!this.isTypeToken(this.peek())) {
       throw new Error(`Expected type declaration at line ${this.peek().line}, found '${this.peek().value}'`);
     }
 
-    const typeToken = this.advance();
+    let typeToken = this.advance();
+    if (typeToken.type === TokenType.UNSIGNED && this.isTypeToken(this.peek())) {
+      typeToken = this.advance();
+    }
+
+    // Optional reference token
+    if (this.match(TokenType.AMP)) {
+      // Ignored or tracked
+    }
+
     const nameToken = this.consume(TokenType.IDENTIFIER, "Expected identifier after type");
 
     // If followed by '(', it's a function declaration
     if (this.match(TokenType.LPAREN)) {
-      return this.finishFunctionDeclaration(typeToken.value, nameToken.value, typeToken.line);
+      return [this.finishFunctionDeclaration(typeToken.value, nameToken.value, typeToken.line, isStatic, isInline)];
     }
 
-    // Otherwise it's a global variable declaration
-    return this.finishVariableDeclaration(typeToken.value, nameToken.value, typeToken.line);
+    // Otherwise it's a global variable declaration (or comma-separated list)
+    return this.finishTopLevelVariableDeclarations(typeToken.value, nameToken.value, typeToken.line, isStatic, isConst);
   }
 
   private finishFunctionDeclaration(
     returnType: string,
     name: string,
-    line: number
+    line: number,
+    isStatic = false,
+    isInline = false
   ): FunctionDeclaration {
     const params: Parameter[] = [];
 
@@ -80,15 +117,31 @@ export class Parser {
           break;
         }
 
+        let isConst = false;
+        if (this.match(TokenType.CONST)) {
+          isConst = true;
+        }
+
         if (!this.isTypeToken(this.peek())) {
           throw new Error(`Expected parameter type at line ${this.peek().line}, found '${this.peek().value}'`);
         }
-        const pType = this.advance().value;
+        let pType = this.advance().value;
+        if (pType === "unsigned" && this.isTypeToken(this.peek())) {
+          pType = this.advance().value;
+        }
+
+        let isRef = false;
+        if (this.match(TokenType.AMP)) {
+          isRef = true;
+        }
+
         const pName = this.consume(TokenType.IDENTIFIER, "Expected parameter name").value;
         params.push({
           type: "Parameter",
           paramType: pType,
           name: pName,
+          isConst,
+          isRef,
           line: this.previous().line,
         });
       } while (this.match(TokenType.COMMA));
@@ -104,6 +157,8 @@ export class Parser {
         name,
         params,
         body: { type: "BlockStatement", statements: [], line },
+        isStatic,
+        isInline,
         line,
       };
     }
@@ -116,28 +171,107 @@ export class Parser {
       name,
       params,
       body,
+      isStatic,
+      isInline,
       line,
     };
   }
 
-  private finishVariableDeclaration(
+  private finishTopLevelVariableDeclarations(
     varType: string,
     name: string,
-    line: number
-  ): VariableDeclaration {
+    line: number,
+    isStatic = false,
+    isConst = false
+  ): VariableDeclaration[] {
+    const decls: VariableDeclaration[] = [];
     let init: Expression | undefined;
 
     if (this.match(TokenType.EQUAL)) {
       init = this.parseExpression();
     }
 
-    this.consume(TokenType.SEMICOLON, "Expected ';' after variable declaration");
-
-    return {
+    decls.push({
       type: "VariableDeclaration",
       varType,
       name,
       init,
+      isStatic,
+      isConst,
+      line,
+    });
+
+    while (this.match(TokenType.COMMA)) {
+      const nextName = this.consume(TokenType.IDENTIFIER, "Expected variable name after ','").value;
+      let nextInit: Expression | undefined;
+      if (this.match(TokenType.EQUAL)) {
+        nextInit = this.parseExpression();
+      }
+      decls.push({
+        type: "VariableDeclaration",
+        varType,
+        name: nextName,
+        init: nextInit,
+        isStatic,
+        isConst,
+        line,
+      });
+    }
+
+    this.consume(TokenType.SEMICOLON, "Expected ';' after variable declaration");
+    return decls;
+  }
+
+  private finishStatementVariableDeclarations(
+    varType: string,
+    name: string,
+    line: number,
+    isStatic = false,
+    isConst = false
+  ): Statement {
+    const decls: VariableDeclaration[] = [];
+    let init: Expression | undefined;
+
+    if (this.match(TokenType.EQUAL)) {
+      init = this.parseExpression();
+    }
+
+    decls.push({
+      type: "VariableDeclaration",
+      varType,
+      name,
+      init,
+      isStatic,
+      isConst,
+      line,
+    });
+
+    while (this.match(TokenType.COMMA)) {
+      const nextName = this.consume(TokenType.IDENTIFIER, "Expected variable name after ','").value;
+      let nextInit: Expression | undefined;
+      if (this.match(TokenType.EQUAL)) {
+        nextInit = this.parseExpression();
+      }
+      decls.push({
+        type: "VariableDeclaration",
+        varType,
+        name: nextName,
+        init: nextInit,
+        isStatic,
+        isConst,
+        line,
+      });
+    }
+
+    this.consume(TokenType.SEMICOLON, "Expected ';' after variable declaration");
+
+    if (decls.length === 1) {
+      return decls[0];
+    }
+
+    return {
+      type: "BlockStatement",
+      statements: decls,
       line,
     };
   }
@@ -165,14 +299,46 @@ export class Parser {
       return this.parseReturnStatement();
     }
 
+    if (token.type === TokenType.BREAK) {
+      this.advance();
+      this.consume(TokenType.SEMICOLON, "Expected ';' after 'break'");
+      return { type: "BreakStatement", line: token.line };
+    }
+
+    if (token.type === TokenType.CONTINUE) {
+      this.advance();
+      this.consume(TokenType.SEMICOLON, "Expected ';' after 'continue'");
+      return { type: "ContinueStatement", line: token.line };
+    }
+
     if (token.type === TokenType.COUT) {
       return this.parseCoutStatement();
     }
 
-    if (this.isTypeToken(token)) {
-      const typeToken = this.advance();
+    if (this.isModifierToken(token) || this.isTypeToken(token)) {
+      let isStatic = false;
+      let isConst = false;
+      while (this.isModifierToken(this.peek())) {
+        const m = this.advance();
+        if (m.type === TokenType.STATIC) isStatic = true;
+        if (m.type === TokenType.CONST) isConst = true;
+      }
+
+      if (!this.isTypeToken(this.peek())) {
+        throw new Error(`Expected type at line ${this.peek().line}, found '${this.peek().value}'`);
+      }
+
+      let typeToken = this.advance();
+      if (typeToken.type === TokenType.UNSIGNED && this.isTypeToken(this.peek())) {
+        typeToken = this.advance();
+      }
+
+      if (this.match(TokenType.AMP)) {
+        // reference
+      }
+
       const nameToken = this.consume(TokenType.IDENTIFIER, "Expected variable name");
-      return this.finishVariableDeclaration(typeToken.value, nameToken.value, typeToken.line);
+      return this.finishStatementVariableDeclarations(typeToken.value, nameToken.value, typeToken.line, isStatic, isConst);
     }
 
     if (this.match(TokenType.SEMICOLON)) {
@@ -240,13 +406,23 @@ export class Parser {
     const line = this.advance().line; // consume 'for'
     this.consume(TokenType.LPAREN, "Expected '(' after 'for'");
 
-    let init: VariableDeclaration | ExpressionStatement | null = null;
+    let init: VariableDeclaration | ExpressionStatement | Statement | null = null;
     if (this.match(TokenType.SEMICOLON)) {
       init = null;
-    } else if (this.isTypeToken(this.peek())) {
-      const typeToken = this.advance();
+    } else if (this.isModifierToken(this.peek()) || this.isTypeToken(this.peek())) {
+      let isStatic = false;
+      let isConst = false;
+      while (this.isModifierToken(this.peek())) {
+        const m = this.advance();
+        if (m.type === TokenType.STATIC) isStatic = true;
+        if (m.type === TokenType.CONST) isConst = true;
+      }
+      let typeToken = this.advance();
+      if (typeToken.type === TokenType.UNSIGNED && this.isTypeToken(this.peek())) {
+        typeToken = this.advance();
+      }
       const nameToken = this.consume(TokenType.IDENTIFIER, "Expected variable name in for init");
-      init = this.finishVariableDeclaration(typeToken.value, nameToken.value, typeToken.line);
+      init = this.finishStatementVariableDeclarations(typeToken.value, nameToken.value, typeToken.line, isStatic, isConst);
     } else {
       init = this.parseExpressionStatement();
     }
@@ -331,7 +507,7 @@ export class Parser {
   }
 
   private parseAssignment(): Expression {
-    const expr = this.parseLogicalOr();
+    const expr = this.parseConditional();
 
     if (
       this.match(TokenType.EQUAL) ||
@@ -355,6 +531,26 @@ export class Parser {
       }
 
       throw new Error(`Invalid assignment target on line ${expr.line}`);
+    }
+
+    return expr;
+  }
+
+  private parseConditional(): Expression {
+    let expr = this.parseLogicalOr();
+
+    if (this.match(TokenType.QUESTION)) {
+      const qLine = this.previous().line;
+      const consequent = this.parseExpression();
+      this.consume(TokenType.COLON, "Expected ':' in conditional ternary expression");
+      const alternate = this.parseConditional();
+      return {
+        type: "ConditionalExpression",
+        condition: expr,
+        consequent,
+        alternate,
+        line: qLine,
+      };
     }
 
     return expr;

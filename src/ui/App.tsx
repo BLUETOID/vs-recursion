@@ -381,7 +381,15 @@ export const App: React.FC = () => {
 
           {/* Terminal Console */}
           <div className="console-wrapper" style={{ height: `${consoleHeight}px` }}>
-            <Output output={currentEvent.output} error={runtimeError || currentEvent.message} />
+            <Output
+              output={currentEvent.output}
+              error={runtimeError || currentEvent.message}
+              currentEvent={currentEvent}
+              totalCalls={totalCalls}
+              maxStackDepth={maxStackDepth}
+              currentIndex={currentIndex}
+              totalSteps={trace.length}
+            />
           </div>
         </div>
 
@@ -474,6 +482,7 @@ export const App: React.FC = () => {
                   direction={currentEvent.direction}
                   returnValue={currentEvent.returnValue}
                   isBaseCase={currentEvent.isBaseCase}
+                  staticVars={currentEvent.staticVars}
                 />
               ) : (
                 <RecursionTree

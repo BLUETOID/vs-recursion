@@ -12,6 +12,17 @@ export class Lexer {
     bool: TokenType.BOOL,
     void: TokenType.VOID,
     char: TokenType.CHAR,
+    double: TokenType.DOUBLE,
+    float: TokenType.FLOAT,
+    long: TokenType.LONG,
+    unsigned: TokenType.UNSIGNED,
+    string: TokenType.STRING_TYPE,
+    auto: TokenType.AUTO,
+    static: TokenType.STATIC,
+    const: TokenType.CONST,
+    inline: TokenType.INLINE,
+    break: TokenType.BREAK,
+    continue: TokenType.CONTINUE,
     if: TokenType.IF,
     else: TokenType.ELSE,
     for: TokenType.FOR,
@@ -161,7 +172,7 @@ export class Lexer {
           if (this.match("&")) {
             tokens.push({ type: TokenType.AMP_AMP, value: "&&", line: startLine, col: startCol });
           } else {
-            throw new Error(`Unexpected character '&' on line ${startLine}, col ${startCol}. Single '&' reference is planned for later.`);
+            tokens.push({ type: TokenType.AMP, value: "&", line: startLine, col: startCol });
           }
           break;
 
@@ -169,8 +180,24 @@ export class Lexer {
           if (this.match("|")) {
             tokens.push({ type: TokenType.PIPE_PIPE, value: "||", line: startLine, col: startCol });
           } else {
-            throw new Error(`Unexpected character '|' on line ${startLine}, col ${startCol}.`);
+            tokens.push({ type: TokenType.PIPE, value: "|", line: startLine, col: startCol });
           }
+          break;
+
+        case "^":
+          tokens.push({ type: TokenType.CARET, value: "^", line: startLine, col: startCol });
+          break;
+
+        case "~":
+          tokens.push({ type: TokenType.TILDE, value: "~", line: startLine, col: startCol });
+          break;
+
+        case "?":
+          tokens.push({ type: TokenType.QUESTION, value: "?", line: startLine, col: startCol });
+          break;
+
+        case ":":
+          tokens.push({ type: TokenType.COLON, value: ":", line: startLine, col: startCol });
           break;
 
         case ";":
@@ -294,6 +321,12 @@ export class Lexer {
     let numStr = "";
     while (!this.isAtEnd() && this.isDigit(this.peek())) {
       numStr += this.advance();
+    }
+    if (!this.isAtEnd() && this.peek() === "." && this.isDigit(this.peekNext())) {
+      numStr += this.advance(); // consume '.'
+      while (!this.isAtEnd() && this.isDigit(this.peek())) {
+        numStr += this.advance();
+      }
     }
     return {
       type: TokenType.NUMBER,

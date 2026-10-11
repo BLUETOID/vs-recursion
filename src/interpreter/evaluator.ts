@@ -4,7 +4,14 @@ import type {
   Statement,
   Expression,
 } from "./ast";
-import type { Frame, TraceEvent, TreeNodeSnapshot } from "./trace";
+import type {
+  Frame,
+  TraceEvent,
+  TreeNodeSnapshot,
+  StaticVarInfo,
+  GlobalVarInfo,
+  VarChange,
+} from "./trace";
 
 class ReturnSignal {
   value: any;
@@ -12,6 +19,9 @@ class ReturnSignal {
     this.value = value;
   }
 }
+
+class BreakSignal {}
+class ContinueSignal {}
 
 export interface EvaluatorOptions {
   maxDepth?: number;
@@ -23,7 +33,10 @@ export interface EvaluatorOptions {
 export class Evaluator {
   private program: Program;
   private functions: Map<string, FunctionDeclaration> = new Map();
-  private globals: Record<string, any> = new Map<string, any>() as any;
+  private globals: Record<string, GlobalVarInfo> = {};
+  private staticStorage: Map<string, StaticVarInfo> = new Map();
+  private frameConsts: Map<string, Set<string>> = new Map();
+  private globalConsts: Set<string> = new Set();
   private callStack: Frame[] = [];
   private trace: TraceEvent[] = [];
   private output = "";
@@ -33,12 +46,12 @@ export class Evaluator {
   private maxSteps: number;
   private treeNodes: TreeNodeSnapshot[] = [];
   private frameTreeNodeMap: Map<string, string> = new Map();
+  private recentChange?: VarChange;
 
   constructor(program: Program, options: EvaluatorOptions = {}) {
     this.program = program;
     this.maxDepth = options.maxDepth ?? 1000;
     this.maxSteps = options.maxSteps ?? 25000;
-    this.globals = {};
   }
 
   run(options: EvaluatorOptions = {}): TraceEvent[] {
@@ -48,8 +61,12 @@ export class Evaluator {
     this.callCounter = 0;
     this.callStack = [];
     this.globals = {};
+    this.staticStorage.clear();
+    this.frameConsts.clear();
+    this.globalConsts.clear();
     this.treeNodes = [];
     this.frameTreeNodeMap.clear();
+    this.recentChange = undefined;
 
     try {
       // 1. Register top-level items
@@ -66,9 +83,29 @@ export class Evaluator {
           } else {
             if (decl.varType === "bool") val = false;
             else if (decl.varType === "char") val = "\0";
+            else if (decl.varType === "string") val = "";
             else val = 0;
           }
-          this.globals[decl.name] = val;
+
+          if (decl.isStatic) {
+            this.staticStorage.set(decl.name, {
+              name: decl.name,
+              value: val,
+              varType: decl.varType,
+              isConst: decl.isConst,
+            });
+          }
+
+          this.globals[decl.name] = {
+            name: decl.name,
+            value: val,
+            varType: decl.varType,
+            isConst: decl.isConst,
+          };
+
+          if (decl.isConst) {
+            this.globalConsts.add(decl.name);
+          }
         }
       }
 
@@ -130,8 +167,24 @@ export class Evaluator {
     }
 
     const argsRecord: Record<string, any> = {};
+    const constParamSet = new Set<string>();
+
     for (let i = 0; i < fn.params.length; i++) {
-      argsRecord[fn.params[i].name] = args[i];
+      const p = fn.params[i];
+      argsRecord[p.name] = args[i];
+      if (p.isConst) {
+        constParamSet.add(p.name);
+      }
+    }
+
+    this.frameConsts.set(frameId, constParamSet);
+
+    // Collect any static variables known for this function
+    const fnStatics: Record<string, any> = {};
+    for (const [k, v] of this.staticStorage.entries()) {
+      if (v.fnName === fn.name || k.startsWith(`${fn.name}::`)) {
+        fnStatics[v.name] = v.value;
+      }
     }
 
     const frame: Frame = {
@@ -142,6 +195,8 @@ export class Evaluator {
       line: fn.line,
       callerFn,
       callerLine,
+      constVars: Array.from(constParamSet),
+      staticVars: fnStatics,
     };
 
     const treeNode: TreeNodeSnapshot = {
@@ -179,7 +234,6 @@ export class Evaluator {
       this.executeStatement(fn.body);
       // If function is void, implicit return null/void
       if (fn.returnType !== "void" && fn.name !== "main") {
-        // In C++, falling off non-void function without return is undefined behavior / missing return
         throw new Error(`Missing return statement in non-void function '${fn.name}' (line ${fn.line})`);
       }
     } catch (e) {
@@ -213,6 +267,7 @@ export class Evaluator {
 
     this.callStack.pop();
     this.frameTreeNodeMap.delete(frameId);
+    this.frameConsts.delete(frameId);
 
     return returnValue;
   }
@@ -229,18 +284,76 @@ export class Evaluator {
         break;
 
       case "VariableDeclaration": {
-        let initVal: any = 0;
-        if (stmt.init) {
-          initVal = this.evaluateExpression(stmt.init);
+        const currentFrame = this.callStack.length > 0 ? this.callStack[this.callStack.length - 1] : null;
+
+        if (stmt.isStatic) {
+          const key = currentFrame ? `${currentFrame.fn}::${stmt.name}` : stmt.name;
+          if (!this.staticStorage.has(key)) {
+            let initVal: any = 0;
+            if (stmt.init) {
+              initVal = this.evaluateExpression(stmt.init);
+            } else {
+              if (stmt.varType === "bool") initVal = false;
+              else if (stmt.varType === "char") initVal = "\0";
+              else if (stmt.varType === "string") initVal = "";
+              else initVal = 0;
+            }
+
+            this.staticStorage.set(key, {
+              name: stmt.name,
+              fnName: currentFrame?.fn,
+              value: initVal,
+              varType: stmt.varType,
+              isConst: stmt.isConst,
+            });
+
+            this.recentChange = {
+              name: stmt.name,
+              scope: "static",
+              newValue: initVal,
+              fnName: currentFrame?.fn,
+            };
+
+            this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
+              explanation: `Initialized static variable ${stmt.name} = ${JSON.stringify(initVal)} (shared in memory across all recursive calls of ${currentFrame?.fn || "function"}).`,
+            });
+          } else {
+            // Already initialized in earlier invocation
+            const existingVal = this.staticStorage.get(key)!.value;
+            this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
+              explanation: `Static variable ${stmt.name} is already initialized (persisting value ${JSON.stringify(existingVal)} across recursion). Skipped re-declaration.`,
+            });
+          }
         } else {
-          if (stmt.varType === "bool") initVal = false;
-          else if (stmt.varType === "char") initVal = "\0";
-          else initVal = 0;
+          // Standard local or global declaration
+          let initVal: any = 0;
+          if (stmt.init) {
+            initVal = this.evaluateExpression(stmt.init);
+          } else {
+            if (stmt.varType === "bool") initVal = false;
+            else if (stmt.varType === "char") initVal = "\0";
+            else if (stmt.varType === "string") initVal = "";
+            else initVal = 0;
+          }
+
+          if (currentFrame && stmt.isConst) {
+            const cSet = this.frameConsts.get(currentFrame.id) || new Set();
+            cSet.add(stmt.name);
+            this.frameConsts.set(currentFrame.id, cSet);
+          }
+
+          this.setLocalVariable(stmt.name, initVal);
+          this.recentChange = {
+            name: stmt.name,
+            scope: currentFrame ? "local" : "global",
+            newValue: initVal,
+            fnName: currentFrame?.fn,
+          };
+
+          this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
+            explanation: `Declared ${stmt.isConst ? "const " : ""}variable ${stmt.name} = ${JSON.stringify(initVal)}.`,
+          });
         }
-        this.setLocalVariable(stmt.name, initVal);
-        this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
-          explanation: `Declared variable ${stmt.name} = ${JSON.stringify(initVal)}.`,
-        });
         break;
       }
 
@@ -268,7 +381,14 @@ export class Evaluator {
             explanation: `While condition is ${wBool ? "TRUE" : "FALSE"} on line ${stmt.line}.`,
           });
           if (!wBool) break;
-          this.executeStatement(stmt.body);
+
+          try {
+            this.executeStatement(stmt.body);
+          } catch (e) {
+            if (e instanceof BreakSignal) break;
+            if (e instanceof ContinueSignal) continue;
+            throw e;
+          }
         }
         break;
       }
@@ -292,7 +412,16 @@ export class Evaluator {
             });
           }
 
-          this.executeStatement(stmt.body);
+          try {
+            this.executeStatement(stmt.body);
+          } catch (e) {
+            if (e instanceof BreakSignal) break;
+            if (e instanceof ContinueSignal) {
+              if (stmt.update) this.evaluateExpression(stmt.update);
+              continue;
+            }
+            throw e;
+          }
 
           if (stmt.update) {
             this.evaluateExpression(stmt.update);
@@ -300,6 +429,18 @@ export class Evaluator {
         }
         break;
       }
+
+      case "BreakStatement":
+        this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
+          explanation: `Break statement executed on line ${stmt.line}: terminating loop.`,
+        });
+        throw new BreakSignal();
+
+      case "ContinueStatement":
+        this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
+          explanation: `Continue statement executed on line ${stmt.line}: jumping to next loop iteration.`,
+        });
+        throw new ContinueSignal();
 
       case "ReturnStatement": {
         this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
@@ -324,7 +465,7 @@ export class Evaluator {
         }
         const delta = this.output.slice(prevOutLen);
         this.recordEvent("PRINT", stmt.line, undefined, undefined, undefined, {
-          explanation: `cout wrote "${delta}" to standard output.`,
+          explanation: `cout output: "${delta}"`,
         });
         break;
       }
@@ -362,6 +503,13 @@ export class Evaluator {
       case "Identifier":
         return this.getVariable(expr.name, expr.line);
 
+      case "ConditionalExpression": {
+        const cond = this.evaluateExpression(expr.condition);
+        return this.isTruthy(cond)
+          ? this.evaluateExpression(expr.consequent)
+          : this.evaluateExpression(expr.alternate);
+      }
+
       case "BinaryExpression": {
         // Handle logical short-circuit
         if (expr.op === "&&") {
@@ -382,22 +530,28 @@ export class Evaluator {
           case "+":
             return typeof left === "string" || typeof right === "string"
               ? left + right
-              : (left + right) | 0;
+              : (Number(left) + Number(right));
           case "-":
-            return (left - right) | 0;
+            return Number(left) - Number(right);
           case "*":
-            return (left * right) | 0;
+            return Number(left) * Number(right);
           case "/":
             if (right === 0) {
               throw new Error(`Division by zero on line ${expr.line}`);
             }
-            return Math.trunc(left / right);
+            return Math.trunc(Number(left) / Number(right));
           case "%":
             if (right === 0) {
               throw new Error(`Modulo by zero on line ${expr.line}`);
             }
             // C++ sign rule: sign of left operand
-            return (left % right) | 0;
+            return (Number(left) % Number(right)) | 0;
+          case "&":
+            return (Number(left) & Number(right)) | 0;
+          case "|":
+            return (Number(left) | Number(right)) | 0;
+          case "^":
+            return (Number(left) ^ Number(right)) | 0;
           case "==":
             return left === right;
           case "!=":
@@ -421,9 +575,11 @@ export class Evaluator {
           case "!":
             return !this.isTruthy(val);
           case "-":
-            return -val;
+            return -Number(val);
           case "+":
-            return +val;
+            return +Number(val);
+          case "~":
+            return ~Number(val);
           default:
             throw new Error(`Unsupported unary operator '${expr.op}' on line ${expr.line}`);
         }
@@ -486,10 +642,18 @@ export class Evaluator {
       if (name in currentFrame.args) {
         return currentFrame.args[name];
       }
+      const staticKey = `${currentFrame.fn}::${name}`;
+      if (this.staticStorage.has(staticKey)) {
+        return this.staticStorage.get(staticKey)!.value;
+      }
+    }
+
+    if (this.staticStorage.has(name)) {
+      return this.staticStorage.get(name)!.value;
     }
 
     if (name in this.globals) {
-      return this.globals[name];
+      return this.globals[name].value;
     }
 
     throw new Error(`Undefined variable '${name}' on line ${line}`);
@@ -500,25 +664,98 @@ export class Evaluator {
       const currentFrame = this.callStack[this.callStack.length - 1];
       currentFrame.locals[name] = value;
     } else {
-      this.globals[name] = value;
+      this.globals[name] = {
+        name,
+        value,
+        varType: typeof value === "number" ? "int" : typeof value === "boolean" ? "bool" : "string",
+      };
     }
   }
 
   private setVariable(name: string, value: any, line: number): void {
+    let oldValue: any = undefined;
+
     if (this.callStack.length > 0) {
       const currentFrame = this.callStack[this.callStack.length - 1];
       if (name in currentFrame.locals) {
+        if (this.frameConsts.get(currentFrame.id)?.has(name)) {
+          throw new Error(`Cannot modify const variable '${name}' on line ${line}`);
+        }
+        oldValue = currentFrame.locals[name];
         currentFrame.locals[name] = value;
+        this.recentChange = {
+          name,
+          scope: "local",
+          oldValue,
+          newValue: value,
+          fnName: currentFrame.fn,
+        };
         return;
       }
+
       if (name in currentFrame.args) {
+        if (this.frameConsts.get(currentFrame.id)?.has(name)) {
+          throw new Error(`Cannot modify const parameter '${name}' on line ${line}`);
+        }
+        oldValue = currentFrame.args[name];
         currentFrame.args[name] = value;
+        this.recentChange = {
+          name,
+          scope: "arg",
+          oldValue,
+          newValue: value,
+          fnName: currentFrame.fn,
+        };
+        return;
+      }
+
+      const staticKey = `${currentFrame.fn}::${name}`;
+      if (this.staticStorage.has(staticKey)) {
+        const sInfo = this.staticStorage.get(staticKey)!;
+        if (sInfo.isConst) {
+          throw new Error(`Cannot modify const static variable '${name}' on line ${line}`);
+        }
+        oldValue = sInfo.value;
+        sInfo.value = value;
+        this.recentChange = {
+          name,
+          scope: "static",
+          oldValue,
+          newValue: value,
+          fnName: currentFrame.fn,
+        };
         return;
       }
     }
 
+    if (this.staticStorage.has(name)) {
+      const sInfo = this.staticStorage.get(name)!;
+      if (sInfo.isConst) {
+        throw new Error(`Cannot modify const static variable '${name}' on line ${line}`);
+      }
+      oldValue = sInfo.value;
+      sInfo.value = value;
+      this.recentChange = {
+        name,
+        scope: "static",
+        oldValue,
+        newValue: value,
+      };
+      return;
+    }
+
     if (name in this.globals) {
-      this.globals[name] = value;
+      if (this.globals[name].isConst || this.globalConsts.has(name)) {
+        throw new Error(`Cannot modify const variable '${name}' on line ${line}`);
+      }
+      oldValue = this.globals[name].value;
+      this.globals[name].value = value;
+      this.recentChange = {
+        name,
+        scope: "global",
+        oldValue,
+        newValue: value,
+      };
       return;
     }
 
@@ -555,22 +792,43 @@ export class Evaluator {
     const currentTreeNodeId = currentFrame ? this.frameTreeNodeMap.get(currentFrame.id) : undefined;
 
     // Deep clone stack frames
-    const stackSnapshot: Frame[] = this.callStack.map((f) => ({
-      id: f.id,
-      fn: f.fn,
-      args: { ...f.args },
-      locals: { ...f.locals },
-      line: f.line,
-      returnValue: f.returnValue,
-      callerFn: f.callerFn,
-      callerLine: f.callerLine,
-    }));
+    const stackSnapshot: Frame[] = this.callStack.map((f) => {
+      const fConsts = Array.from(this.frameConsts.get(f.id) || []);
+      const fStatics: Record<string, any> = {};
+      for (const [k, v] of this.staticStorage.entries()) {
+        if (v.fnName === f.fn || k.startsWith(`${f.fn}::`)) {
+          fStatics[v.name] = v.value;
+        }
+      }
+      return {
+        id: f.id,
+        fn: f.fn,
+        args: { ...f.args },
+        locals: { ...f.locals },
+        line: f.line,
+        returnValue: f.returnValue,
+        callerFn: f.callerFn,
+        callerLine: f.callerLine,
+        constVars: fConsts,
+        staticVars: fStatics,
+      };
+    });
 
     // Deep clone tree nodes
     const treeNodesSnapshot: TreeNodeSnapshot[] = this.treeNodes.map((n) => ({
       ...n,
       args: { ...n.args },
     }));
+
+    const staticVarsSnapshot: Record<string, StaticVarInfo> = {};
+    for (const [k, v] of this.staticStorage.entries()) {
+      staticVarsSnapshot[k] = { ...v };
+    }
+
+    const globalsSnapshot: Record<string, GlobalVarInfo> = {};
+    for (const [k, v] of Object.entries(this.globals)) {
+      globalsSnapshot[k] = { ...v };
+    }
 
     const event: TraceEvent = {
       index: this.stepCount++,
@@ -588,6 +846,9 @@ export class Evaluator {
       isBaseCase: extra?.isBaseCase,
       callerFn: extra?.callerFn || currentFrame?.callerFn,
       callerLine: extra?.callerLine || currentFrame?.callerLine,
+      staticVars: staticVarsSnapshot,
+      globals: globalsSnapshot,
+      recentChange: this.recentChange ? { ...this.recentChange } : undefined,
     };
 
     this.trace.push(event);
