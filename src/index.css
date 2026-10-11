@@ -1399,6 +1399,8 @@ body {
   font-size: 10.5px;
   font-weight: 500;
   pointer-events: none;
+  dominant-baseline: central;
+  text-anchor: middle;
 }
 
 .tree-node-group.active .tree-node-pill {
@@ -1434,6 +1436,8 @@ body {
   font-size: 8.5px;
   font-weight: 600;
   pointer-events: none;
+  dominant-baseline: central;
+  text-anchor: middle;
 }
 
 /* ==========================================================================

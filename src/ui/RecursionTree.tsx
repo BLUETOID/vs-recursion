@@ -20,6 +20,10 @@ interface PositionedNode {
   node: TreeNodeSnapshot;
   x: number;
   y: number;
+  width: number;
+  label: string;
+  retStr?: string;
+  retWidth?: number;
 }
 
 export const RecursionTree: React.FC<RecursionTreeProps> = ({
@@ -34,7 +38,7 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isManualView, setIsManualView] = useState<boolean>(false);
 
-  // Compute hierarchical tree layout
+  // Compute hierarchical tree layout with dynamic node widths
   const { layoutNodes, edges, bounds } = useMemo(() => {
     if (treeNodes.length === 0) {
       return {
@@ -44,12 +48,50 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
       };
     }
 
-    const childrenMap = new Map<string, TreeNodeSnapshot[]>();
-    let rootId: string | null = null;
+    // 1. Calculate labels, dynamic widths, and return value pill widths for every node
+    const nodeMetaMap = new Map<
+      string,
+      { width: number; label: string; retStr?: string; retWidth?: number }
+    >();
 
     for (const node of treeNodes) {
-      if (!node.parentId) {
-        rootId = node.id;
+      const argsStr = Object.values(node.args)
+        .map((v) => {
+          if (typeof v === "string") {
+            return JSON.stringify(v.length > 12 ? v.slice(0, 10) + "…" : v);
+          }
+          if (Array.isArray(v)) {
+            if (v.length > 4) {
+              return `[${v.slice(0, 3).map((x) => JSON.stringify(x)).join(",")},…]`;
+            }
+            return JSON.stringify(v);
+          }
+          return JSON.stringify(v);
+        })
+        .join(", ");
+
+      const label = `${node.fn}(${argsStr})`;
+      // font-size: 10.5px monospace font width is ~7.0px per char + 28px padding
+      const width = Math.max(96, Math.ceil(label.length * 7.2) + 28);
+
+      let retStr: string | undefined;
+      let retWidth: number | undefined;
+      if (node.status === "returned" && node.returnValue !== undefined) {
+        retStr = `= ${JSON.stringify(node.returnValue)}`;
+        retWidth = Math.max(54, Math.ceil(retStr.length * 7.0) + 18);
+      }
+
+      nodeMetaMap.set(node.id, { width, label, retStr, retWidth });
+    }
+
+    // 2. Build parent-child relationships and find root(s)
+    const childrenMap = new Map<string, TreeNodeSnapshot[]>();
+    const allNodeIds = new Set(treeNodes.map((n) => n.id));
+    const roots: TreeNodeSnapshot[] = [];
+
+    for (const node of treeNodes) {
+      if (!node.parentId || !allNodeIds.has(node.parentId)) {
+        roots.push(node);
       } else {
         const list = childrenMap.get(node.parentId) || [];
         list.push(node);
@@ -57,36 +99,80 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
       }
     }
 
-    if (!rootId && treeNodes.length > 0) {
-      rootId = treeNodes[0].id;
+    if (roots.length === 0 && treeNodes.length > 0) {
+      roots.push(treeNodes[0]);
     }
 
-    const positions = new Map<string, { x: number; y: number }>();
-    let curX = 60;
-    const nodeSpacingX = 120;
-    const levelSpacingY = 90;
+    // 3. Compute subtree widths bottom-up to prevent any horizontal collisions
+    const subtreeWidths = new Map<string, number>();
+    const nodeGapX = 24; // minimum horizontal gap between adjacent subtrees
 
-    function layoutSubtree(id: string, depth: number): number {
+    function computeSubtreeWidth(id: string): number {
+      const nodeMeta = nodeMetaMap.get(id);
+      const selfWidth = (nodeMeta?.width || 96) + nodeGapX;
       const children = childrenMap.get(id) || [];
-      const y = 60 + depth * levelSpacingY;
 
       if (children.length === 0) {
-        const x = curX;
-        curX += nodeSpacingX;
-        positions.set(id, { x, y });
-        return x;
+        subtreeWidths.set(id, selfWidth);
+        return selfWidth;
       }
 
-      const childXs = children.map((c) => layoutSubtree(c.id, depth + 1));
-      const midX = (childXs[0] + childXs[childXs.length - 1]) / 2;
-      positions.set(id, { x: midX, y });
-      return midX;
+      let childrenTotalWidth = 0;
+      for (const child of children) {
+        childrenTotalWidth += computeSubtreeWidth(child.id);
+      }
+
+      const totalWidth = Math.max(selfWidth, childrenTotalWidth);
+      subtreeWidths.set(id, totalWidth);
+      return totalWidth;
     }
 
-    if (rootId) {
-      layoutSubtree(rootId, 0);
+    for (const root of roots) {
+      computeSubtreeWidth(root.id);
     }
 
+    // 4. Place nodes top-down with exact center alignment
+    const positions = new Map<string, { x: number; y: number }>();
+    const levelSpacingY = 90;
+
+    function layoutSubtree(id: string, startX: number, depth: number): void {
+      const subWidth = subtreeWidths.get(id) || 120;
+      const y = 60 + depth * levelSpacingY;
+      const children = childrenMap.get(id) || [];
+
+      if (children.length === 0) {
+        const x = startX + subWidth / 2;
+        positions.set(id, { x, y });
+        return;
+      }
+
+      let childrenTotalWidth = 0;
+      for (const child of children) {
+        childrenTotalWidth += subtreeWidths.get(child.id) || 120;
+      }
+
+      const childOffset = (subWidth - childrenTotalWidth) / 2;
+      let currentChildX = startX + childOffset;
+      const childXs: number[] = [];
+
+      for (const child of children) {
+        const cWidth = subtreeWidths.get(child.id) || 120;
+        layoutSubtree(child.id, currentChildX, depth + 1);
+        childXs.push(currentChildX + cWidth / 2);
+        currentChildX += cWidth;
+      }
+
+      const midChildX = (childXs[0] + childXs[childXs.length - 1]) / 2;
+      positions.set(id, { x: midChildX, y });
+    }
+
+    let forestStartX = 60;
+    for (const root of roots) {
+      layoutSubtree(root.id, forestStartX, 0);
+      forestStartX += subtreeWidths.get(root.id) || 120;
+    }
+
+    // 5. Build positioned nodes, edges, and viewport bounds
     const posNodes: PositionedNode[] = [];
     const edgeList: { id: string; x1: number; y1: number; x2: number; y2: number }[] = [];
 
@@ -97,21 +183,32 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
 
     for (const node of treeNodes) {
       const pos = positions.get(node.id) || { x: 100, y: 100 };
-      posNodes.push({ node, x: pos.x, y: pos.y });
+      const meta = nodeMetaMap.get(node.id)!;
+      const halfW = meta.width / 2;
 
-      if (pos.x < minX) minX = pos.x;
-      if (pos.x > maxX) maxX = pos.x;
-      if (pos.y < minY) minY = pos.y;
-      if (pos.y > maxY) maxY = pos.y;
+      posNodes.push({
+        node,
+        x: pos.x,
+        y: pos.y,
+        width: meta.width,
+        label: meta.label,
+        retStr: meta.retStr,
+        retWidth: meta.retWidth,
+      });
+
+      if (pos.x - halfW < minX) minX = pos.x - halfW;
+      if (pos.x + halfW > maxX) maxX = pos.x + halfW;
+      if (pos.y - 20 < minY) minY = pos.y - 20;
+      if (pos.y + 36 > maxY) maxY = pos.y + 36;
 
       if (node.parentId && positions.has(node.parentId)) {
         const parentPos = positions.get(node.parentId)!;
         edgeList.push({
           id: `${node.parentId}-${node.id}`,
           x1: parentPos.x,
-          y1: parentPos.y + 20,
+          y1: parentPos.y + 18,
           x2: pos.x,
-          y2: pos.y - 20,
+          y2: pos.y - 18,
         });
       }
     }
@@ -178,7 +275,6 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
 
   // Mouse pan handlers
   const handleMouseDown = (e: React.MouseEvent) => {
-    // Only left click
     if (e.button !== 0) return;
     setIsDragging(true);
     dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
@@ -209,7 +305,6 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
     const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
     const newZoom = Math.min(Math.max(zoom * zoomFactor, 0.25), 3.0);
 
-    // Zoom centered around mouse pointer
     const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
     const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
 
@@ -342,12 +437,10 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
 
               {/* Call Nodes */}
               <g className="tree-nodes">
-                {layoutNodes.map(({ node, x, y }) => {
+                {layoutNodes.map(({ node, x, y, width, label, retStr, retWidth }) => {
                   const isActive = node.id === activeNodeId;
                   const isReturned = node.status === "returned";
-                  const argsStr = Object.values(node.args)
-                    .map((v) => JSON.stringify(v))
-                    .join(", ");
+                  const halfW = width / 2;
 
                   return (
                     <g
@@ -360,50 +453,58 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
                       }}
                       style={{ cursor: onSelectNode ? "pointer" : "default" }}
                     >
+                      <title>{node.fn}({Object.entries(node.args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")})</title>
+
+                      {/* Main Node Background Card */}
                       <rect
-                        x="-44"
-                        y="-18"
-                        width="88"
-                        height="36"
-                        rx="6"
+                        x={-halfW}
+                        y={-18}
+                        width={width}
+                        height={36}
+                        rx={7}
                         className="tree-node-pill"
                       />
 
+                      {/* Active Node Cyan Glow Ring */}
                       {isActive && (
                         <rect
-                          x="-47"
-                          y="-21"
-                          width="94"
-                          height="42"
-                          rx="8"
+                          x={-halfW - 3}
+                          y={-21}
+                          width={width + 6}
+                          height={42}
+                          rx={9}
                           className="active-pulse-ring"
                         />
                       )}
 
+                      {/* Function Call Label */}
                       <text
-                        y="-1"
+                        y={0}
+                        dominantBaseline="central"
                         textAnchor="middle"
                         className="tree-node-label"
                       >
-                        {node.fn}({argsStr})
+                        {label}
                       </text>
 
-                      {isReturned && node.returnValue !== undefined && (
-                        <g transform="translate(0, 22)">
+                      {/* Return Value Badge */}
+                      {isReturned && retStr && retWidth && (
+                        <g transform="translate(0, 24)">
                           <rect
-                            x="-28"
-                            y="-7"
-                            width="56"
-                            height="14"
-                            rx="3"
+                            x={-retWidth / 2}
+                            y={-7.5}
+                            width={retWidth}
+                            height={15}
+                            rx={4}
                             className="return-pill-bg"
                           />
                           <text
-                            y="3"
+                            y={0}
+                            dominantBaseline="central"
                             textAnchor="middle"
                             className="return-pill-text"
                           >
-                            = {JSON.stringify(node.returnValue)}
+                            {retStr}
                           </text>
                         </g>
                       )}
