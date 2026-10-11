@@ -10,6 +10,7 @@ import type {
   ForStatement,
   ReturnStatement,
   CoutStatement,
+  CinStatement,
   ExpressionStatement,
   Expression,
   Identifier,
@@ -52,8 +53,52 @@ export class Parser {
       token.type === TokenType.LONG ||
       token.type === TokenType.UNSIGNED ||
       token.type === TokenType.STRING_TYPE ||
-      token.type === TokenType.AUTO
+      token.type === TokenType.AUTO ||
+      token.type === TokenType.VECTOR ||
+      token.type === TokenType.PAIR
     );
+  }
+
+  private consumeGreater(message: string): void {
+    if (this.check(TokenType.SHR)) {
+      const shrToken = this.advance();
+      this.tokens.splice(this.current, 0, {
+        type: TokenType.GREATER,
+        value: ">",
+        line: shrToken.line,
+        col: shrToken.col + 1,
+      });
+      return;
+    }
+    this.consume(TokenType.GREATER, message);
+  }
+
+  private parseTypeString(): string {
+    const token = this.advance();
+    let typeName = token.value;
+
+    if (token.type === TokenType.LONG && this.match(TokenType.LONG)) {
+      typeName = "long long";
+    } else if (token.type === TokenType.UNSIGNED && this.isTypeToken(this.peek())) {
+      const nextType = this.advance();
+      typeName = `unsigned ${nextType.value}`;
+    } else if (token.type === TokenType.VECTOR) {
+      if (this.match(TokenType.LESS)) {
+        const innerType = this.parseTypeString();
+        this.consumeGreater("Expected '>' after vector template argument");
+        typeName = `vector<${innerType}>`;
+      }
+    } else if (token.type === TokenType.PAIR) {
+      if (this.match(TokenType.LESS)) {
+        const firstType = this.parseTypeString();
+        this.consume(TokenType.COMMA, "Expected ',' between pair template arguments");
+        const secondType = this.parseTypeString();
+        this.consumeGreater("Expected '>' after pair template arguments");
+        typeName = `pair<${firstType}, ${secondType}>`;
+      }
+    }
+
+    return typeName;
   }
 
   private isModifierToken(token: Token): boolean {
@@ -80,10 +125,8 @@ export class Parser {
       throw new Error(`Expected type declaration at line ${this.peek().line}, found '${this.peek().value}'`);
     }
 
-    let typeToken = this.advance();
-    if (typeToken.type === TokenType.UNSIGNED && this.isTypeToken(this.peek())) {
-      typeToken = this.advance();
-    }
+    const typeLine = this.peek().line;
+    const typeName = this.parseTypeString();
 
     // Optional reference token
     if (this.match(TokenType.AMP)) {
@@ -94,11 +137,11 @@ export class Parser {
 
     // If followed by '(', it's a function declaration
     if (this.match(TokenType.LPAREN)) {
-      return [this.finishFunctionDeclaration(typeToken.value, nameToken.value, typeToken.line, isStatic, isInline)];
+      return [this.finishFunctionDeclaration(typeName, nameToken.value, typeLine, isStatic, isInline)];
     }
 
     // Otherwise it's a global variable declaration (or comma-separated list)
-    return this.finishTopLevelVariableDeclarations(typeToken.value, nameToken.value, typeToken.line, isStatic, isConst);
+    return this.finishTopLevelVariableDeclarations(typeName, nameToken.value, typeLine, isStatic, isConst);
   }
 
   private finishFunctionDeclaration(
@@ -125,10 +168,7 @@ export class Parser {
         if (!this.isTypeToken(this.peek())) {
           throw new Error(`Expected parameter type at line ${this.peek().line}, found '${this.peek().value}'`);
         }
-        let pType = this.advance().value;
-        if (pType === "unsigned" && this.isTypeToken(this.peek())) {
-          pType = this.advance().value;
-        }
+        const pType = this.parseTypeString();
 
         let isRef = false;
         if (this.match(TokenType.AMP)) {
@@ -136,6 +176,13 @@ export class Parser {
         }
 
         const pName = this.consume(TokenType.IDENTIFIER, "Expected parameter name").value;
+        if (this.match(TokenType.LBRACKET)) {
+          if (!this.check(TokenType.RBRACKET)) {
+            this.parseExpression();
+          }
+          this.consume(TokenType.RBRACKET, "Expected ']' after array parameter");
+        }
+
         params.push({
           type: "Parameter",
           paramType: pType,
@@ -185,10 +232,34 @@ export class Parser {
     isConst = false
   ): VariableDeclaration[] {
     const decls: VariableDeclaration[] = [];
-    let init: Expression | undefined;
 
+    let isArray = false;
+    let arraySize: Expression | undefined;
+    if (this.match(TokenType.LBRACKET)) {
+      isArray = true;
+      if (!this.check(TokenType.RBRACKET)) {
+        arraySize = this.parseExpression();
+      }
+      this.consume(TokenType.RBRACKET, "Expected ']' after array size");
+    }
+
+    let init: Expression | undefined;
     if (this.match(TokenType.EQUAL)) {
       init = this.parseExpression();
+    } else if (this.match(TokenType.LPAREN)) {
+      const args: Expression[] = [];
+      if (!this.check(TokenType.RPAREN)) {
+        do {
+          args.push(this.parseExpression());
+        } while (this.match(TokenType.COMMA));
+      }
+      this.consume(TokenType.RPAREN, "Expected ')' after constructor arguments");
+      init = {
+        type: "CallExpression",
+        callee: varType,
+        args,
+        line,
+      };
     }
 
     decls.push({
@@ -198,14 +269,39 @@ export class Parser {
       init,
       isStatic,
       isConst,
+      isArray,
+      arraySize,
       line,
     });
 
     while (this.match(TokenType.COMMA)) {
       const nextName = this.consume(TokenType.IDENTIFIER, "Expected variable name after ','").value;
+      let nextIsArray = false;
+      let nextArraySize: Expression | undefined;
+      if (this.match(TokenType.LBRACKET)) {
+        nextIsArray = true;
+        if (!this.check(TokenType.RBRACKET)) {
+          nextArraySize = this.parseExpression();
+        }
+        this.consume(TokenType.RBRACKET, "Expected ']' after array size");
+      }
       let nextInit: Expression | undefined;
       if (this.match(TokenType.EQUAL)) {
         nextInit = this.parseExpression();
+      } else if (this.match(TokenType.LPAREN)) {
+        const args: Expression[] = [];
+        if (!this.check(TokenType.RPAREN)) {
+          do {
+            args.push(this.parseExpression());
+          } while (this.match(TokenType.COMMA));
+        }
+        this.consume(TokenType.RPAREN, "Expected ')' after constructor arguments");
+        nextInit = {
+          type: "CallExpression",
+          callee: varType,
+          args,
+          line,
+        };
       }
       decls.push({
         type: "VariableDeclaration",
@@ -214,6 +310,8 @@ export class Parser {
         init: nextInit,
         isStatic,
         isConst,
+        isArray: nextIsArray,
+        arraySize: nextArraySize,
         line,
       });
     }
@@ -230,10 +328,34 @@ export class Parser {
     isConst = false
   ): Statement {
     const decls: VariableDeclaration[] = [];
-    let init: Expression | undefined;
 
+    let isArray = false;
+    let arraySize: Expression | undefined;
+    if (this.match(TokenType.LBRACKET)) {
+      isArray = true;
+      if (!this.check(TokenType.RBRACKET)) {
+        arraySize = this.parseExpression();
+      }
+      this.consume(TokenType.RBRACKET, "Expected ']' after array size");
+    }
+
+    let init: Expression | undefined;
     if (this.match(TokenType.EQUAL)) {
       init = this.parseExpression();
+    } else if (this.match(TokenType.LPAREN)) {
+      const args: Expression[] = [];
+      if (!this.check(TokenType.RPAREN)) {
+        do {
+          args.push(this.parseExpression());
+        } while (this.match(TokenType.COMMA));
+      }
+      this.consume(TokenType.RPAREN, "Expected ')' after constructor arguments");
+      init = {
+        type: "CallExpression",
+        callee: varType,
+        args,
+        line,
+      };
     }
 
     decls.push({
@@ -243,14 +365,39 @@ export class Parser {
       init,
       isStatic,
       isConst,
+      isArray,
+      arraySize,
       line,
     });
 
     while (this.match(TokenType.COMMA)) {
       const nextName = this.consume(TokenType.IDENTIFIER, "Expected variable name after ','").value;
+      let nextIsArray = false;
+      let nextArraySize: Expression | undefined;
+      if (this.match(TokenType.LBRACKET)) {
+        nextIsArray = true;
+        if (!this.check(TokenType.RBRACKET)) {
+          nextArraySize = this.parseExpression();
+        }
+        this.consume(TokenType.RBRACKET, "Expected ']' after array size");
+      }
       let nextInit: Expression | undefined;
       if (this.match(TokenType.EQUAL)) {
         nextInit = this.parseExpression();
+      } else if (this.match(TokenType.LPAREN)) {
+        const args: Expression[] = [];
+        if (!this.check(TokenType.RPAREN)) {
+          do {
+            args.push(this.parseExpression());
+          } while (this.match(TokenType.COMMA));
+        }
+        this.consume(TokenType.RPAREN, "Expected ')' after constructor arguments");
+        nextInit = {
+          type: "CallExpression",
+          callee: varType,
+          args,
+          line,
+        };
       }
       decls.push({
         type: "VariableDeclaration",
@@ -259,6 +406,8 @@ export class Parser {
         init: nextInit,
         isStatic,
         isConst,
+        isArray: nextIsArray,
+        arraySize: nextArraySize,
         line,
       });
     }
@@ -315,6 +464,10 @@ export class Parser {
       return this.parseCoutStatement();
     }
 
+    if (token.type === TokenType.CIN) {
+      return this.parseCinStatement();
+    }
+
     if (this.isModifierToken(token) || this.isTypeToken(token)) {
       let isStatic = false;
       let isConst = false;
@@ -328,17 +481,15 @@ export class Parser {
         throw new Error(`Expected type at line ${this.peek().line}, found '${this.peek().value}'`);
       }
 
-      let typeToken = this.advance();
-      if (typeToken.type === TokenType.UNSIGNED && this.isTypeToken(this.peek())) {
-        typeToken = this.advance();
-      }
+      const typeLine = this.peek().line;
+      const typeName = this.parseTypeString();
 
       if (this.match(TokenType.AMP)) {
         // reference
       }
 
       const nameToken = this.consume(TokenType.IDENTIFIER, "Expected variable name");
-      return this.finishStatementVariableDeclarations(typeToken.value, nameToken.value, typeToken.line, isStatic, isConst);
+      return this.finishStatementVariableDeclarations(typeName, nameToken.value, typeLine, isStatic, isConst);
     }
 
     if (this.match(TokenType.SEMICOLON)) {
@@ -417,12 +568,10 @@ export class Parser {
         if (m.type === TokenType.STATIC) isStatic = true;
         if (m.type === TokenType.CONST) isConst = true;
       }
-      let typeToken = this.advance();
-      if (typeToken.type === TokenType.UNSIGNED && this.isTypeToken(this.peek())) {
-        typeToken = this.advance();
-      }
+      const typeLine = this.peek().line;
+      const typeName = this.parseTypeString();
       const nameToken = this.consume(TokenType.IDENTIFIER, "Expected variable name in for init");
-      init = this.finishStatementVariableDeclarations(typeToken.value, nameToken.value, typeToken.line, isStatic, isConst);
+      init = this.finishStatementVariableDeclarations(typeName, nameToken.value, typeLine, isStatic, isConst);
     } else {
       init = this.parseExpressionStatement();
     }
@@ -490,6 +639,29 @@ export class Parser {
     };
   }
 
+  private parseCinStatement(): CinStatement {
+    const line = this.advance().line; // consume 'cin'
+    const targets: Expression[] = [];
+
+    if (!this.match(TokenType.SHR)) {
+      throw new Error(`Expected '>>' after 'cin' on line ${line}`);
+    }
+
+    targets.push(this.parsePostfix());
+
+    while (this.match(TokenType.SHR)) {
+      targets.push(this.parsePostfix());
+    }
+
+    this.consume(TokenType.SEMICOLON, "Expected ';' after cin statement");
+
+    return {
+      type: "CinStatement",
+      targets,
+      line,
+    };
+  }
+
   private parseExpressionStatement(): ExpressionStatement {
     const expr = this.parseExpression();
     this.consume(TokenType.SEMICOLON, "Expected ';' after expression");
@@ -520,7 +692,11 @@ export class Parser {
       const op = this.previous().value;
       const right = this.parseAssignment();
 
-      if (expr.type === "Identifier") {
+      if (
+        expr.type === "Identifier" ||
+        expr.type === "IndexExpression" ||
+        expr.type === "MemberExpression"
+      ) {
         return {
           type: "AssignmentExpression",
           op,
@@ -703,20 +879,58 @@ export class Parser {
   }
 
   private parsePostfix(): Expression {
-    const expr = this.parsePrimary();
+    let expr = this.parsePrimary();
 
-    if (this.match(TokenType.PLUS_PLUS) || this.match(TokenType.MINUS_MINUS)) {
-      const op = this.previous().value as "++" | "--";
-      if (expr.type !== "Identifier") {
-        throw new Error(`Invalid postfix operand on line ${expr.line}`);
+    while (true) {
+      if (this.match(TokenType.LBRACKET)) {
+        const index = this.parseExpression();
+        this.consume(TokenType.RBRACKET, "Expected ']' after array index");
+        expr = {
+          type: "IndexExpression",
+          object: expr,
+          index,
+          line: expr.line,
+        };
+      } else if (this.match(TokenType.DOT) || this.match(TokenType.ARROW)) {
+        const propToken = this.consume(TokenType.IDENTIFIER, "Expected member name");
+        if (this.match(TokenType.LPAREN)) {
+          const args: Expression[] = [];
+          if (!this.check(TokenType.RPAREN)) {
+            do {
+              args.push(this.parseExpression());
+            } while (this.match(TokenType.COMMA));
+          }
+          this.consume(TokenType.RPAREN, "Expected ')' after method arguments");
+          expr = {
+            type: "MethodCallExpression",
+            object: expr,
+            method: propToken.value,
+            args,
+            line: expr.line,
+          };
+        } else {
+          expr = {
+            type: "MemberExpression",
+            object: expr,
+            property: propToken.value,
+            line: expr.line,
+          };
+        }
+      } else if (this.match(TokenType.PLUS_PLUS) || this.match(TokenType.MINUS_MINUS)) {
+        const op = this.previous().value as "++" | "--";
+        if (expr.type !== "Identifier" && expr.type !== "IndexExpression") {
+          throw new Error(`Invalid postfix operand on line ${expr.line}`);
+        }
+        expr = {
+          type: "UpdateExpression",
+          op,
+          argument: expr as any,
+          prefix: false,
+          line: expr.line,
+        };
+      } else {
+        break;
       }
-      return {
-        type: "UpdateExpression",
-        op,
-        argument: expr,
-        prefix: false,
-        line: expr.line,
-      };
     }
 
     return expr;
@@ -728,7 +942,7 @@ export class Parser {
     if (this.match(TokenType.NUMBER)) {
       return {
         type: "NumberLiteral",
-        value: parseInt(token.value, 10),
+        value: token.value.includes(".") ? parseFloat(token.value) : parseInt(token.value, 10),
         line: token.line,
       };
     }
@@ -769,6 +983,64 @@ export class Parser {
       return {
         type: "EndlExpression",
         line: token.line,
+      };
+    }
+
+    if (this.match(TokenType.LBRACE)) {
+      const line = this.previous().line;
+      const elements: Expression[] = [];
+      if (!this.check(TokenType.RBRACE)) {
+        do {
+          elements.push(this.parseExpression());
+        } while (this.match(TokenType.COMMA));
+      }
+      this.consume(TokenType.RBRACE, "Expected '}' after initializer list");
+      return {
+        type: "ArrayLiteral",
+        elements,
+        line,
+      };
+    }
+
+    if (this.match(TokenType.VECTOR)) {
+      const line = this.previous().line;
+      if (this.match(TokenType.LESS)) {
+        this.parseTypeString();
+        this.consume(TokenType.GREATER, "Expected '>' after vector type argument");
+      }
+      const args: Expression[] = [];
+      if (this.match(TokenType.LPAREN)) {
+        if (!this.check(TokenType.RPAREN)) {
+          do {
+            args.push(this.parseExpression());
+          } while (this.match(TokenType.COMMA));
+        }
+        this.consume(TokenType.RPAREN, "Expected ')' after vector constructor");
+      }
+      return {
+        type: "CallExpression",
+        callee: "vector",
+        args,
+        line,
+      };
+    }
+
+    if (this.match(TokenType.STRING_TYPE)) {
+      const line = this.previous().line;
+      const args: Expression[] = [];
+      if (this.match(TokenType.LPAREN)) {
+        if (!this.check(TokenType.RPAREN)) {
+          do {
+            args.push(this.parseExpression());
+          } while (this.match(TokenType.COMMA));
+        }
+        this.consume(TokenType.RPAREN, "Expected ')' after string constructor");
+      }
+      return {
+        type: "CallExpression",
+        callee: "string",
+        args,
+        line,
       };
     }
 

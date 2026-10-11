@@ -21,9 +21,13 @@ export const TokenType = {
   WHILE: "WHILE",
   RETURN: "RETURN",
   COUT: "COUT",
+  CIN: "CIN",
   ENDL: "ENDL",
   TRUE: "TRUE",
   FALSE: "FALSE",
+  VECTOR: "VECTOR",
+  PAIR: "PAIR",
+  TYPEDEF: "TYPEDEF",
 
   // Identifiers and Literals
   IDENTIFIER: "IDENTIFIER",
@@ -45,6 +49,9 @@ export const TokenType = {
   TILDE: "TILDE",             // ~
   QUESTION: "QUESTION",       // ?
   COLON: "COLON",             // :
+  COLON_COLON: "COLON_COLON", // ::
+  DOT: "DOT",                 // .
+  ARROW: "ARROW",             // ->
 
   // Comparison
   EQ_EQ: "EQ_EQ",             // ==
@@ -69,6 +76,7 @@ export const TokenType = {
 
   // Stream
   SHL: "SHL",                 // <<
+  SHR: "SHR",                 // >>
 
   // Punctuation
   SEMICOLON: "SEMICOLON",     // ;

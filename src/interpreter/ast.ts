@@ -32,6 +32,8 @@ export interface VariableDeclaration extends BaseNode {
   init?: Expression;
   isStatic?: boolean;
   isConst?: boolean;
+  isArray?: boolean;
+  arraySize?: Expression;
 }
 
 export type Statement =
@@ -44,8 +46,14 @@ export type Statement =
   | BreakStatement
   | ContinueStatement
   | CoutStatement
+  | CinStatement
   | ExpressionStatement
   | EmptyStatement;
+
+export interface CinStatement extends BaseNode {
+  type: "CinStatement";
+  targets: Expression[];
+}
 
 export interface BreakStatement extends BaseNode {
   type: "BreakStatement";
@@ -112,6 +120,10 @@ export type Expression =
   | AssignmentExpression
   | ConditionalExpression
   | CallExpression
+  | MethodCallExpression
+  | IndexExpression
+  | MemberExpression
+  | ArrayLiteral
   | EndlExpression;
 
 export interface ConditionalExpression extends BaseNode {
@@ -146,6 +158,23 @@ export interface Identifier extends BaseNode {
   name: string;
 }
 
+export interface IndexExpression extends BaseNode {
+  type: "IndexExpression";
+  object: Expression;
+  index: Expression;
+}
+
+export interface MemberExpression extends BaseNode {
+  type: "MemberExpression";
+  object: Expression;
+  property: string;
+}
+
+export interface ArrayLiteral extends BaseNode {
+  type: "ArrayLiteral";
+  elements: Expression[];
+}
+
 export interface BinaryExpression extends BaseNode {
   type: "BinaryExpression";
   op: string;
@@ -163,20 +192,27 @@ export interface UnaryExpression extends BaseNode {
 export interface UpdateExpression extends BaseNode {
   type: "UpdateExpression";
   op: "++" | "--";
-  argument: Identifier;
+  argument: Identifier | IndexExpression;
   prefix: boolean;
 }
 
 export interface AssignmentExpression extends BaseNode {
   type: "AssignmentExpression";
   op: string;
-  left: Identifier;
+  left: Identifier | IndexExpression | MemberExpression;
   right: Expression;
 }
 
 export interface CallExpression extends BaseNode {
   type: "CallExpression";
   callee: string;
+  args: Expression[];
+}
+
+export interface MethodCallExpression extends BaseNode {
+  type: "MethodCallExpression";
+  object: Expression;
+  method: string;
   args: Expression[];
 }
 

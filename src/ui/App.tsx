@@ -220,10 +220,14 @@ export const App: React.FC = () => {
               onChange={(e) => handleSelectPreset(e.target.value)}
               className="preset-select"
             >
-              {PRESET_EXAMPLES.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name}
-                </option>
+              {Array.from(new Set(PRESET_EXAMPLES.map((p) => p.category))).map((cat) => (
+                <optgroup key={cat} label={cat}>
+                  {PRESET_EXAMPLES.filter((p) => p.category === cat).map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
             <button

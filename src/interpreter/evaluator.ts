@@ -1,6 +1,7 @@
 import type {
   Program,
   FunctionDeclaration,
+  VariableDeclaration,
   Statement,
   Expression,
 } from "./ast";
@@ -23,11 +24,17 @@ class ReturnSignal {
 class BreakSignal {}
 class ContinueSignal {}
 
+interface RefBinding {
+  targetFrame: Frame | null;
+  name: string;
+}
+
 export interface EvaluatorOptions {
   maxDepth?: number;
   maxSteps?: number;
   entryFunction?: string;
   entryArgs?: any[];
+  input?: string;
 }
 
 export class Evaluator {
@@ -36,6 +43,7 @@ export class Evaluator {
   private globals: Record<string, GlobalVarInfo> = {};
   private staticStorage: Map<string, StaticVarInfo> = new Map();
   private frameConsts: Map<string, Set<string>> = new Map();
+  private frameRefBindings: Map<string, Map<string, RefBinding>> = new Map();
   private globalConsts: Set<string> = new Set();
   private callStack: Frame[] = [];
   private trace: TraceEvent[] = [];
@@ -47,6 +55,7 @@ export class Evaluator {
   private treeNodes: TreeNodeSnapshot[] = [];
   private frameTreeNodeMap: Map<string, string> = new Map();
   private recentChange?: VarChange;
+  private inputTokens: string[] = [];
 
   constructor(program: Program, options: EvaluatorOptions = {}) {
     this.program = program;
@@ -63,10 +72,17 @@ export class Evaluator {
     this.globals = {};
     this.staticStorage.clear();
     this.frameConsts.clear();
+    this.frameRefBindings.clear();
     this.globalConsts.clear();
     this.treeNodes = [];
     this.frameTreeNodeMap.clear();
     this.recentChange = undefined;
+
+    if (options.input) {
+      this.inputTokens = options.input.trim().split(/\s+/).filter(Boolean);
+    } else {
+      this.inputTokens = [];
+    }
 
     try {
       // 1. Register top-level items
@@ -77,15 +93,7 @@ export class Evaluator {
             this.functions.set(decl.name, decl);
           }
         } else if (decl.type === "VariableDeclaration") {
-          let val: any = 0;
-          if (decl.init) {
-            val = this.evaluateExpression(decl.init);
-          } else {
-            if (decl.varType === "bool") val = false;
-            else if (decl.varType === "char") val = "\0";
-            else if (decl.varType === "string") val = "";
-            else val = 0;
-          }
+          const val = this.getDefaultOrInitValue(decl);
 
           if (decl.isStatic) {
             this.staticStorage.set(decl.name, {
@@ -124,9 +132,11 @@ export class Evaluator {
         } else {
           // Provide sensible default arguments based on parameter types
           const defaultArgs = firstFn.params.map((p) => {
-            if (p.paramType === "int") return 4;
+            if (p.paramType === "int" || p.paramType === "long long") return 4;
             if (p.paramType === "bool") return true;
             if (p.paramType === "char") return "A";
+            if (p.paramType.startsWith("vector")) return [1, 2, 3];
+            if (p.paramType === "string") return "abc";
             return 0;
           });
           this.executeFunction(firstFn, defaultArgs);
@@ -144,11 +154,36 @@ export class Evaluator {
     return this.trace;
   }
 
+  private getDefaultOrInitValue(decl: VariableDeclaration): any {
+    if (decl.init) {
+      return this.evaluateExpression(decl.init);
+    }
+    if (decl.isArray) {
+      if (decl.arraySize) {
+        const size = Number(this.evaluateExpression(decl.arraySize));
+        const defaultElem = decl.varType === "bool" ? false : decl.varType === "string" ? "" : decl.varType === "char" ? "\0" : 0;
+        return new Array(Math.max(0, size)).fill(defaultElem);
+      }
+      return [];
+    }
+    if (decl.varType.startsWith("vector")) {
+      return [];
+    }
+    if (decl.varType.startsWith("pair")) {
+      return { first: 0, second: 0 };
+    }
+    if (decl.varType === "bool") return false;
+    if (decl.varType === "char") return "\0";
+    if (decl.varType === "string") return "";
+    return 0;
+  }
+
   private executeFunction(
     fn: FunctionDeclaration,
     args: any[],
     callerFn?: string,
-    callerLine?: number
+    callerLine?: number,
+    refBindings?: Map<string, RefBinding>
   ): any {
     if (this.callStack.length >= this.maxDepth) {
       throw new Error(`Infinite recursion detected: maximum call depth limit (${this.maxDepth}) exceeded in function '${fn.name}'`);
@@ -171,13 +206,21 @@ export class Evaluator {
 
     for (let i = 0; i < fn.params.length; i++) {
       const p = fn.params[i];
-      argsRecord[p.name] = args[i];
+      let val = args[i];
+      // If passed by value and is array, clone it to mirror C++ pass-by-value semantics
+      if (!p.isRef && Array.isArray(val)) {
+        val = JSON.parse(JSON.stringify(val));
+      }
+      argsRecord[p.name] = val;
       if (p.isConst) {
         constParamSet.add(p.name);
       }
     }
 
     this.frameConsts.set(frameId, constParamSet);
+    if (refBindings) {
+      this.frameRefBindings.set(frameId, refBindings);
+    }
 
     // Collect any static variables known for this function
     const fnStatics: Record<string, any> = {};
@@ -232,7 +275,7 @@ export class Evaluator {
     let returnValue: any = null;
     try {
       this.executeStatement(fn.body);
-      // If function is void, implicit return null/void
+      // If function is non-void and not main, expect a return
       if (fn.returnType !== "void" && fn.name !== "main") {
         throw new Error(`Missing return statement in non-void function '${fn.name}' (line ${fn.line})`);
       }
@@ -268,6 +311,7 @@ export class Evaluator {
     this.callStack.pop();
     this.frameTreeNodeMap.delete(frameId);
     this.frameConsts.delete(frameId);
+    this.frameRefBindings.delete(frameId);
 
     return returnValue;
   }
@@ -289,15 +333,7 @@ export class Evaluator {
         if (stmt.isStatic) {
           const key = currentFrame ? `${currentFrame.fn}::${stmt.name}` : stmt.name;
           if (!this.staticStorage.has(key)) {
-            let initVal: any = 0;
-            if (stmt.init) {
-              initVal = this.evaluateExpression(stmt.init);
-            } else {
-              if (stmt.varType === "bool") initVal = false;
-              else if (stmt.varType === "char") initVal = "\0";
-              else if (stmt.varType === "string") initVal = "";
-              else initVal = 0;
-            }
+            const initVal = this.getDefaultOrInitValue(stmt);
 
             this.staticStorage.set(key, {
               name: stmt.name,
@@ -326,15 +362,7 @@ export class Evaluator {
           }
         } else {
           // Standard local or global declaration
-          let initVal: any = 0;
-          if (stmt.init) {
-            initVal = this.evaluateExpression(stmt.init);
-          } else {
-            if (stmt.varType === "bool") initVal = false;
-            else if (stmt.varType === "char") initVal = "\0";
-            else if (stmt.varType === "string") initVal = "";
-            else initVal = 0;
-          }
+          const initVal = this.getDefaultOrInitValue(stmt);
 
           if (currentFrame && stmt.isConst) {
             const cSet = this.frameConsts.get(currentFrame.id) || new Set();
@@ -352,6 +380,25 @@ export class Evaluator {
 
           this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
             explanation: `Declared ${stmt.isConst ? "const " : ""}variable ${stmt.name} = ${JSON.stringify(initVal)}.`,
+          });
+        }
+        break;
+      }
+
+      case "CinStatement": {
+        for (const target of stmt.targets) {
+          let val: any = 0;
+          if (this.inputTokens.length > 0) {
+            const raw = this.inputTokens.shift()!;
+            val = !isNaN(Number(raw)) ? Number(raw) : raw;
+          } else {
+            // Default input fallback for competitive programming demos
+            val = 4;
+          }
+          this.assignToTarget(target, val, stmt.line);
+          const targetName = target.type === "Identifier" ? target.name : "target";
+          this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
+            explanation: `cin >> ${targetName} received ${JSON.stringify(val)}.`,
           });
         }
         break;
@@ -503,6 +550,118 @@ export class Evaluator {
       case "Identifier":
         return this.getVariable(expr.name, expr.line);
 
+      case "ArrayLiteral":
+        return expr.elements.map((el) => this.evaluateExpression(el));
+
+      case "IndexExpression": {
+        const obj = this.evaluateExpression(expr.object);
+        const idx = this.evaluateExpression(expr.index);
+        if (obj === undefined || obj === null) {
+          throw new Error(`Cannot index into undefined or null on line ${expr.line}`);
+        }
+        if (typeof obj === "string") {
+          const i = Number(idx);
+          if (i < 0 || i >= obj.length) return "";
+          return obj[i];
+        }
+        if (Array.isArray(obj)) {
+          const i = Number(idx);
+          return obj[i];
+        }
+        if (typeof obj === "object") {
+          return obj[idx];
+        }
+        throw new Error(`Invalid index target on line ${expr.line}`);
+      }
+
+      case "MemberExpression": {
+        const obj = this.evaluateExpression(expr.object);
+        if (obj === null || obj === undefined) {
+          throw new Error(`Cannot access property '${expr.property}' on undefined/null on line ${expr.line}`);
+        }
+        return obj[expr.property];
+      }
+
+      case "MethodCallExpression": {
+        const obj = this.evaluateExpression(expr.object);
+        const methodName = expr.method;
+        const args = expr.args.map((a) => this.evaluateExpression(a));
+
+        if (Array.isArray(obj)) {
+          if (methodName === "size" || methodName === "length") {
+            return obj.length;
+          }
+          if (methodName === "empty") {
+            return obj.length === 0;
+          }
+          if (methodName === "push_back" || methodName === "emplace_back") {
+            obj.push(args[0]);
+            this.recordObjectMutation(expr.object);
+            return;
+          }
+          if (methodName === "pop_back") {
+            const popped = obj.pop();
+            this.recordObjectMutation(expr.object);
+            return popped;
+          }
+          if (methodName === "back") {
+            return obj[obj.length - 1];
+          }
+          if (methodName === "front") {
+            return obj[0];
+          }
+          if (methodName === "clear") {
+            obj.length = 0;
+            this.recordObjectMutation(expr.object);
+            return;
+          }
+          if (methodName === "begin") {
+            return { __iter: true, obj, idx: 0, expr: expr.object };
+          }
+          if (methodName === "end") {
+            return { __iter: true, obj, idx: obj.length, expr: expr.object };
+          }
+        }
+
+        if (typeof obj === "string") {
+          if (methodName === "size" || methodName === "length") {
+            return obj.length;
+          }
+          if (methodName === "empty") {
+            return obj.length === 0;
+          }
+          if (methodName === "substr") {
+            const start = Number(args[0]);
+            const len = args[1] !== undefined ? Number(args[1]) : undefined;
+            return len !== undefined ? obj.substring(start, start + len) : obj.substring(start);
+          }
+          if (methodName === "push_back") {
+            const newStr = obj + String(args[0]);
+            this.assignToTarget(expr.object, newStr, expr.line);
+            return;
+          }
+          if (methodName === "pop_back") {
+            const newStr = obj.slice(0, -1);
+            this.assignToTarget(expr.object, newStr, expr.line);
+            return;
+          }
+          if (methodName === "back") {
+            return obj[obj.length - 1];
+          }
+          if (methodName === "front") {
+            return obj[0];
+          }
+          if (methodName === "begin") {
+            return { __iter: true, obj, idx: 0, isStr: true, expr: expr.object };
+          }
+          if (methodName === "end") {
+            return { __iter: true, obj, idx: obj.length, isStr: true, expr: expr.object };
+          }
+        }
+
+        throw new Error(`Unsupported method '${methodName}' on line ${expr.line}`);
+      }
+
       case "ConditionalExpression": {
         const cond = this.evaluateExpression(expr.condition);
         return this.isTruthy(cond)
@@ -530,7 +689,7 @@ export class Evaluator {
           case "+":
             return typeof left === "string" || typeof right === "string"
               ? left + right
-              : (Number(left) + Number(right));
+              : Number(left) + Number(right);
           case "-":
             return Number(left) - Number(right);
           case "*":
@@ -544,7 +703,6 @@ export class Evaluator {
             if (right === 0) {
               throw new Error(`Modulo by zero on line ${expr.line}`);
             }
-            // C++ sign rule: sign of left operand
             return (Number(left) % Number(right)) | 0;
           case "&":
             return (Number(left) & Number(right)) | 0;
@@ -552,6 +710,10 @@ export class Evaluator {
             return (Number(left) | Number(right)) | 0;
           case "^":
             return (Number(left) ^ Number(right)) | 0;
+          case "<<":
+            return (Number(left) << Number(right)) | 0;
+          case ">>":
+            return (Number(left) >> Number(right)) | 0;
           case "==":
             return left === right;
           case "!=":
@@ -586,9 +748,9 @@ export class Evaluator {
       }
 
       case "UpdateExpression": {
-        const cur = this.getVariable(expr.argument.name, expr.line);
+        const cur = Number(this.evaluateExpression(expr.argument));
         const updated = expr.op === "++" ? cur + 1 : cur - 1;
-        this.setVariable(expr.argument.name, updated, expr.line);
+        this.assignToTarget(expr.argument, updated, expr.line);
         return expr.prefix ? updated : cur;
       }
 
@@ -596,33 +758,262 @@ export class Evaluator {
         const rightVal = this.evaluateExpression(expr.right);
         let finalVal = rightVal;
         if (expr.op !== "=") {
-          const curVal = this.getVariable(expr.left.name, expr.line);
+          const curVal = this.evaluateExpression(expr.left);
           switch (expr.op) {
-            case "+=": finalVal = curVal + rightVal; break;
-            case "-=": finalVal = curVal - rightVal; break;
-            case "*=": finalVal = curVal * rightVal; break;
+            case "+=":
+              finalVal = typeof curVal === "string" || typeof rightVal === "string"
+                ? curVal + rightVal
+                : Number(curVal) + Number(rightVal);
+              break;
+            case "-=":
+              finalVal = Number(curVal) - Number(rightVal);
+              break;
+            case "*=":
+              finalVal = Number(curVal) * Number(rightVal);
+              break;
             case "/=":
               if (rightVal === 0) throw new Error(`Division by zero on line ${expr.line}`);
-              finalVal = Math.trunc(curVal / rightVal);
+              finalVal = Math.trunc(Number(curVal) / Number(rightVal));
               break;
             case "%=":
               if (rightVal === 0) throw new Error(`Modulo by zero on line ${expr.line}`);
-              finalVal = (curVal % rightVal) | 0;
+              finalVal = (Number(curVal) % Number(rightVal)) | 0;
               break;
           }
         }
-        this.setVariable(expr.left.name, finalVal, expr.line);
+        this.assignToTarget(expr.left, finalVal, expr.line);
         return finalVal;
       }
 
       case "CallExpression": {
+        const callee = expr.callee;
+
+        // Built-in standard functions
+        if (callee === "swap" || callee === "std::swap") {
+          if (expr.args.length !== 2) throw new Error(`swap requires 2 arguments on line ${expr.line}`);
+          const arg0 = expr.args[0];
+          const arg1 = expr.args[1];
+          const val0 = this.evaluateExpression(arg0);
+          const val1 = this.evaluateExpression(arg1);
+          this.assignToTarget(arg0, val1, expr.line);
+          this.assignToTarget(arg1, val0, expr.line);
+          return;
+        }
+
+        if (callee === "max" || callee === "std::max") {
+          const a = this.evaluateExpression(expr.args[0]);
+          const b = this.evaluateExpression(expr.args[1]);
+          return Math.max(a, b);
+        }
+
+        if (callee === "min" || callee === "std::min") {
+          const a = this.evaluateExpression(expr.args[0]);
+          const b = this.evaluateExpression(expr.args[1]);
+          return Math.min(a, b);
+        }
+
+        if (callee === "abs" || callee === "std::abs") {
+          return Math.abs(this.evaluateExpression(expr.args[0]));
+        }
+
+        if (callee === "pow" || callee === "std::pow") {
+          return Math.pow(this.evaluateExpression(expr.args[0]), this.evaluateExpression(expr.args[1]));
+        }
+
+        if (callee === "sqrt" || callee === "std::sqrt") {
+          return Math.sqrt(this.evaluateExpression(expr.args[0]));
+        }
+
+        if (callee === "floor" || callee === "std::floor") {
+          return Math.floor(this.evaluateExpression(expr.args[0]));
+        }
+
+        if (callee === "ceil" || callee === "std::ceil") {
+          return Math.ceil(this.evaluateExpression(expr.args[0]));
+        }
+
+        if (callee === "make_pair" || callee === "std::make_pair") {
+          return {
+            first: this.evaluateExpression(expr.args[0]),
+            second: this.evaluateExpression(expr.args[1]),
+          };
+        }
+
+        if (callee === "reverse" || callee === "std::reverse") {
+          this.executeReverse(expr.args, expr.line);
+          return;
+        }
+
+        if (callee === "sort" || callee === "std::sort") {
+          this.executeSort(expr.args, expr.line);
+          return;
+        }
+
+        if (callee.startsWith("vector")) {
+          const evalArgs = expr.args.map((a) => this.evaluateExpression(a));
+          if (evalArgs.length === 0) return [];
+          if (evalArgs.length === 1) return new Array(Math.max(0, Number(evalArgs[0]))).fill(0);
+          const sz = Math.max(0, Number(evalArgs[0]));
+          const fillVal = evalArgs[1];
+          return Array.isArray(fillVal)
+            ? Array.from({ length: sz }, () => JSON.parse(JSON.stringify(fillVal)))
+            : new Array(sz).fill(fillVal);
+        }
+
+        if (callee === "string") {
+          const evalArgs = expr.args.map((a) => this.evaluateExpression(a));
+          if (evalArgs.length === 0) return "";
+          if (evalArgs.length === 1) return String(evalArgs[0]);
+          return String(evalArgs[1]).repeat(Math.max(0, Number(evalArgs[0])));
+        }
+
         const fn = this.functions.get(expr.callee);
         if (!fn) {
           throw new Error(`Call to unknown function '${expr.callee}' on line ${expr.line}`);
         }
-        const evaluatedArgs = expr.args.map((a) => this.evaluateExpression(a));
+
         const callerFrame = this.callStack.length > 0 ? this.callStack[this.callStack.length - 1] : null;
-        return this.executeFunction(fn, evaluatedArgs, callerFrame?.fn, expr.line);
+        const evaluatedArgs: any[] = [];
+        const bindings = new Map<string, RefBinding>();
+
+        for (let i = 0; i < fn.params.length; i++) {
+          const param = fn.params[i];
+          const argExpr = expr.args[i];
+          if (!argExpr) {
+            evaluatedArgs.push(0);
+            continue;
+          }
+          const val = this.evaluateExpression(argExpr);
+          evaluatedArgs.push(val);
+
+          if (param.isRef && argExpr.type === "Identifier") {
+            let targetFrame = callerFrame;
+            let targetName = argExpr.name;
+            while (targetFrame) {
+              const callerBindings = this.frameRefBindings.get(targetFrame.id);
+              if (callerBindings && callerBindings.has(targetName)) {
+                const parentBinding = callerBindings.get(targetName)!;
+                targetFrame = parentBinding.targetFrame;
+                targetName = parentBinding.name;
+              } else {
+                break;
+              }
+            }
+            bindings.set(param.name, {
+              targetFrame,
+              name: targetName,
+            });
+          }
+        }
+
+        return this.executeFunction(fn, evaluatedArgs, callerFrame?.fn, expr.line, bindings);
+      }
+    }
+  }
+
+  private assignToTarget(target: Expression, value: any, line: number): void {
+    if (target.type === "Identifier") {
+      this.setVariable(target.name, value, line);
+    } else if (target.type === "IndexExpression") {
+      const obj = this.evaluateExpression(target.object);
+      const idx = this.evaluateExpression(target.index);
+      const numIdx = Number(idx);
+
+      if (typeof obj === "string") {
+        const char = String(value).charAt(0) || "";
+        const updated = obj.substring(0, numIdx) + char + obj.substring(numIdx + 1);
+        this.assignToTarget(target.object, updated, line);
+      } else if (Array.isArray(obj)) {
+        obj[numIdx] = value;
+        this.recordObjectMutation(target.object);
+      } else if (typeof obj === "object" && obj !== null) {
+        obj[idx] = value;
+        this.recordObjectMutation(target.object);
+      } else {
+        throw new Error(`Cannot assign to index on line ${line}`);
+      }
+    } else if (target.type === "MemberExpression") {
+      const obj = this.evaluateExpression(target.object);
+      if (typeof obj === "object" && obj !== null) {
+        obj[target.property] = value;
+        this.recordObjectMutation(target.object);
+      } else {
+        throw new Error(`Cannot assign to property '${target.property}' on line ${line}`);
+      }
+    } else {
+      throw new Error(`Invalid assignment target on line ${line}`);
+    }
+  }
+
+  private recordObjectMutation(target: Expression): void {
+    let root = target;
+    while (root.type === "IndexExpression" || root.type === "MemberExpression") {
+      root = root.object;
+    }
+    if (root.type === "Identifier") {
+      const name = root.name;
+      const currentFrame = this.callStack.length > 0 ? this.callStack[this.callStack.length - 1] : null;
+      let val: any;
+      let scope: "local" | "arg" | "static" | "global" = "local";
+
+      if (currentFrame && name in currentFrame.locals) {
+        val = currentFrame.locals[name];
+        scope = "local";
+      } else if (currentFrame && name in currentFrame.args) {
+        val = currentFrame.args[name];
+        scope = "arg";
+      } else if (name in this.globals) {
+        val = this.globals[name].value;
+        scope = "global";
+      }
+
+      this.recentChange = {
+        name,
+        scope,
+        newValue: Array.isArray(val) ? [...val] : val,
+        fnName: currentFrame?.fn,
+      };
+    }
+  }
+
+  private executeReverse(args: Expression[], line: number): void {
+    if (args.length !== 2) throw new Error(`reverse expects 2 arguments on line ${line}`);
+    const first = this.evaluateExpression(args[0]);
+    const last = this.evaluateExpression(args[1]);
+
+    if (first && first.__iter && last && last.__iter && first.obj === last.obj) {
+      const arr = first.obj;
+      const start = first.idx;
+      const end = last.idx;
+      if (Array.isArray(arr)) {
+        const slice = arr.slice(start, end).reverse();
+        for (let i = 0; i < slice.length; i++) {
+          arr[start + i] = slice[i];
+        }
+        this.recordObjectMutation(first.expr);
+      } else if (typeof arr === "string") {
+        const reversedSlice = arr.substring(start, end).split("").reverse().join("");
+        const newStr = arr.substring(0, start) + reversedSlice + arr.substring(end);
+        this.assignToTarget(first.expr, newStr, line);
+      }
+    }
+  }
+
+  private executeSort(args: Expression[], line: number): void {
+    if (args.length < 2) throw new Error(`sort expects at least 2 arguments on line ${line}`);
+    const first = this.evaluateExpression(args[0]);
+    const last = this.evaluateExpression(args[1]);
+
+    if (first && first.__iter && last && last.__iter && first.obj === last.obj) {
+      const arr = first.obj;
+      const start = first.idx;
+      const end = last.idx;
+      if (Array.isArray(arr)) {
+        const slice = arr.slice(start, end).sort((a: any, b: any) => (a > b ? 1 : a < b ? -1 : 0));
+        for (let i = 0; i < slice.length; i++) {
+          arr[start + i] = slice[i];
+        }
+        this.recordObjectMutation(first.expr);
       }
     }
   }
@@ -634,8 +1025,27 @@ export class Evaluator {
   }
 
   private getVariable(name: string, line: number): any {
+    if (name === "INT_MAX") return 2147483647;
+    if (name === "INT_MIN") return -2147483648;
+    if (name === "LLONG_MAX") return 9223372036854775807;
+    if (name === "LLONG_MIN") return -9223372036854775807;
+    if (name === "NULL" || name === "nullptr") return null;
+    if (name === "true") return true;
+    if (name === "false") return false;
+
     if (this.callStack.length > 0) {
       const currentFrame = this.callStack[this.callStack.length - 1];
+      const bindings = this.frameRefBindings.get(currentFrame.id);
+      if (bindings && bindings.has(name)) {
+        const b = bindings.get(name)!;
+        if (b.targetFrame) {
+          if (b.name in b.targetFrame.locals) return b.targetFrame.locals[b.name];
+          if (b.name in b.targetFrame.args) return b.targetFrame.args[b.name];
+        } else if (b.name in this.globals) {
+          return this.globals[b.name].value;
+        }
+      }
+
       if (name in currentFrame.locals) {
         return currentFrame.locals[name];
       }
@@ -677,6 +1087,51 @@ export class Evaluator {
 
     if (this.callStack.length > 0) {
       const currentFrame = this.callStack[this.callStack.length - 1];
+      const bindings = this.frameRefBindings.get(currentFrame.id);
+      if (bindings && bindings.has(name)) {
+        const b = bindings.get(name)!;
+        // Keep current frame args reflection up to date
+        if (name in currentFrame.args) {
+          currentFrame.args[name] = value;
+        }
+        if (b.targetFrame) {
+          if (b.name in b.targetFrame.locals) {
+            oldValue = b.targetFrame.locals[b.name];
+            b.targetFrame.locals[b.name] = value;
+            this.recentChange = {
+              name: b.name,
+              scope: "local",
+              oldValue,
+              newValue: value,
+              fnName: b.targetFrame.fn,
+            };
+            return;
+          }
+          if (b.name in b.targetFrame.args) {
+            oldValue = b.targetFrame.args[b.name];
+            b.targetFrame.args[b.name] = value;
+            this.recentChange = {
+              name: b.name,
+              scope: "arg",
+              oldValue,
+              newValue: value,
+              fnName: b.targetFrame.fn,
+            };
+            return;
+          }
+        } else if (b.name in this.globals) {
+          oldValue = this.globals[b.name].value;
+          this.globals[b.name].value = value;
+          this.recentChange = {
+            name: b.name,
+            scope: "global",
+            oldValue,
+            newValue: value,
+          };
+          return;
+        }
+      }
+
       if (name in currentFrame.locals) {
         if (this.frameConsts.get(currentFrame.id)?.has(name)) {
           throw new Error(`Cannot modify const variable '${name}' on line ${line}`);

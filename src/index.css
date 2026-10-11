@@ -180,6 +180,13 @@ body {
   color: var(--text-main);
 }
 
+.preset-select optgroup {
+  background-color: var(--bg-surface);
+  color: #89b4fa;
+  font-weight: 600;
+  font-size: 0.74rem;
+}
+
 .navbar-actions {
   display: flex;
   align-items: center;

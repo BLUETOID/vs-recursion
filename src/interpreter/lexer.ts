@@ -6,6 +6,7 @@ export class Lexer {
   private pos = 0;
   private line = 1;
   private col = 1;
+  private macros: Map<string, string> = new Map();
 
   private static KEYWORDS: Record<string, TokenType> = {
     int: TokenType.INT,
@@ -29,9 +30,13 @@ export class Lexer {
     while: TokenType.WHILE,
     return: TokenType.RETURN,
     cout: TokenType.COUT,
+    cin: TokenType.CIN,
     endl: TokenType.ENDL,
     true: TokenType.TRUE,
     false: TokenType.FALSE,
+    vector: TokenType.VECTOR,
+    pair: TokenType.PAIR,
+    typedef: TokenType.TYPEDEF,
   };
 
   constructor(source: string) {
@@ -47,9 +52,9 @@ export class Lexer {
 
       const ch = this.peek();
 
-      // Preprocessor directives like #include <iostream>
+      // Preprocessor directives like #include <bits/stdc++.h> or #define ll long long
       if (ch === "#") {
-        this.skipPreprocessor();
+        this.handlePreprocessor();
         continue;
       }
 
@@ -65,9 +70,30 @@ export class Lexer {
       // Handle identifiers and keywords
       if (this.isAlpha(ch) || ch === "_") {
         const idToken = this.readIdentifierOrKeyword(startLine, startCol);
-        // Handle "using namespace std;" statement by skipping it
+        // Handle "using" statements
         if (idToken.value === "using") {
-          this.skipUsingNamespace();
+          this.handleUsing();
+          continue;
+        }
+        // Handle "typedef" statements
+        if (idToken.value === "typedef") {
+          this.handleTypedef();
+          continue;
+        }
+        // Handle std:: namespace resolution seamlessly
+        if (idToken.value === "std" && this.peek() === ":" && this.peekNext() === ":") {
+          this.advance(); // consume ':'
+          this.advance(); // consume ':'
+          continue; // next token is the standard library entity (cout, vector, max, etc.)
+        }
+        // Expand preprocessor macros (#define ll long long, #define INF 1000000000, etc.)
+        if (this.macros.has(idToken.value)) {
+          const replacement = this.macros.get(idToken.value)!;
+          const subLexer = new Lexer(replacement);
+          subLexer.line = startLine;
+          subLexer.col = startCol;
+          const subTokens = subLexer.tokenize().filter((t) => t.type !== TokenType.EOF);
+          tokens.push(...subTokens);
           continue;
         }
         tokens.push(idToken);
@@ -105,6 +131,8 @@ export class Lexer {
             tokens.push({ type: TokenType.MINUS_MINUS, value: "--", line: startLine, col: startCol });
           } else if (this.match("=")) {
             tokens.push({ type: TokenType.MINUS_EQUAL, value: "-=", line: startLine, col: startCol });
+          } else if (this.match(">")) {
+            tokens.push({ type: TokenType.ARROW, value: "->", line: startLine, col: startCol });
           } else {
             tokens.push({ type: TokenType.MINUS, value: "-", line: startLine, col: startCol });
           }
@@ -145,7 +173,9 @@ export class Lexer {
           break;
 
         case ">":
-          if (this.match("=")) {
+          if (this.match(">")) {
+            tokens.push({ type: TokenType.SHR, value: ">>", line: startLine, col: startCol });
+          } else if (this.match("=")) {
             tokens.push({ type: TokenType.GREATER_EQ, value: ">=", line: startLine, col: startCol });
           } else {
             tokens.push({ type: TokenType.GREATER, value: ">", line: startLine, col: startCol });
@@ -197,7 +227,15 @@ export class Lexer {
           break;
 
         case ":":
-          tokens.push({ type: TokenType.COLON, value: ":", line: startLine, col: startCol });
+          if (this.match(":")) {
+            tokens.push({ type: TokenType.COLON_COLON, value: "::", line: startLine, col: startCol });
+          } else {
+            tokens.push({ type: TokenType.COLON, value: ":", line: startLine, col: startCol });
+          }
+          break;
+
+        case ".":
+          tokens.push({ type: TokenType.DOT, value: ".", line: startLine, col: startCol });
           break;
 
         case ";":
@@ -300,20 +338,88 @@ export class Lexer {
     }
   }
 
-  private skipPreprocessor(): void {
-    // Skip everything until newline
+  private handlePreprocessor(): void {
+    this.advance(); // consume '#'
+    this.skipWhitespaceAndComments();
+    let directive = "";
+    while (!this.isAtEnd() && this.isAlpha(this.peek())) {
+      directive += this.advance();
+    }
+    this.skipWhitespaceAndComments();
+
+    if (directive === "define") {
+      let macroName = "";
+      while (!this.isAtEnd() && (this.isAlpha(this.peek()) || this.isDigit(this.peek()) || this.peek() === "_")) {
+        macroName += this.advance();
+      }
+      this.skipWhitespaceAndComments();
+      let replacement = "";
+      while (!this.isAtEnd() && this.peek() !== "\n") {
+        replacement += this.advance();
+      }
+      replacement = replacement.trim();
+      if (macroName && replacement) {
+        this.macros.set(macroName, replacement);
+      }
+      return;
+    }
+
+    // For #include, #pragma, etc., skip until newline
     while (!this.isAtEnd() && this.peek() !== "\n") {
       this.advance();
     }
   }
 
-  private skipUsingNamespace(): void {
-    // Consumes "using" has been read. Now skip until ';'
-    while (!this.isAtEnd() && this.peek() !== ";") {
-      this.advance();
+  private handleUsing(): void {
+    // "using" was consumed.
+    this.skipWhitespaceAndComments();
+    let first = "";
+    while (!this.isAtEnd() && (this.isAlpha(this.peek()) || this.peek() === "_")) {
+      first += this.advance();
     }
-    if (this.match(";")) {
-      // done
+    if (first === "namespace") {
+      // using namespace std; -> skip until ';'
+      while (!this.isAtEnd() && this.peek() !== ";") {
+        this.advance();
+      }
+      if (this.match(";")) {}
+    } else {
+      // e.g. using ll = long long;
+      this.skipWhitespaceAndComments();
+      if (this.match("=")) {
+        this.skipWhitespaceAndComments();
+        let target = "";
+        while (!this.isAtEnd() && this.peek() !== ";") {
+          target += this.advance();
+        }
+        if (this.match(";")) {}
+        target = target.trim();
+        if (first && target) {
+          this.macros.set(first, target);
+        }
+      } else {
+        while (!this.isAtEnd() && this.peek() !== ";") {
+          this.advance();
+        }
+        if (this.match(";")) {}
+      }
+    }
+  }
+
+  private handleTypedef(): void {
+    // typedef Type alias; e.g. typedef long long ll; or typedef vector<int> vi;
+    this.skipWhitespaceAndComments();
+    let content = "";
+    while (!this.isAtEnd() && this.peek() !== ";") {
+      content += this.advance();
+    }
+    if (this.match(";")) {}
+    content = content.trim();
+    const parts = content.split(/\s+/);
+    if (parts.length >= 2) {
+      const alias = parts[parts.length - 1];
+      const target = parts.slice(0, parts.length - 1).join(" ");
+      this.macros.set(alias, target);
     }
   }
 
@@ -353,7 +459,7 @@ export class Lexer {
     }
 
     // Check for unsupported keywords
-    const unsupported = ["struct", "class", "template", "switch", "case", "goto", "new", "delete", "pointer", "float", "double"];
+    const unsupported = ["struct", "class", "template", "switch", "case", "goto", "new", "delete", "pointer"];
     if (unsupported.includes(text)) {
       throw new Error(`unsupported: '${text}' on line ${line}`);
     }
