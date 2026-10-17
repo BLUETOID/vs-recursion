@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Terminal, AlertCircle, Copy, Check } from "lucide-react";
 
 interface OutputProps {
@@ -8,6 +8,13 @@ interface OutputProps {
 
 export const Output: React.FC<OutputProps> = ({ output, error }) => {
   const [copied, setCopied] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    }
+  }, [output]);
 
   const handleCopy = () => {
     if (!output) return;
@@ -46,7 +53,7 @@ export const Output: React.FC<OutputProps> = ({ output, error }) => {
         </div>
       </div>
 
-      <div className="terminal-body">
+      <div className="terminal-body" ref={bodyRef}>
         {error && (
           <div className="terminal-error" id="terminal-error-banner">
             <AlertCircle className="icon-xs text-red" />

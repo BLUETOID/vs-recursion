@@ -228,4 +228,44 @@ int main() {
     const last = trace[trace.length - 1];
     expect(last.output).toContain("first=42 second=99\nupdated=100\n");
   });
+
+  it("supports vector<vector<int>> push_back of backtracking vector without reference mutation", () => {
+    const code = `
+#include <bits/stdc++.h>
+#include <iostream>
+using namespace std;
+
+void helper(vector<int>& inputNumbers, int i, int n, vector<int>& current, vector<vector<int>>& allSubset) {
+    if (i == n) {
+        allSubset.push_back(current);
+        return;
+    }
+    helper(inputNumbers, i + 1, n, current, allSubset);
+    current.push_back(inputNumbers[i]);
+    helper(inputNumbers, i + 1, n, current, allSubset);
+    current.pop_back();
+}
+
+int main() {
+    vector<int> inputNumbers = {1, 2};
+    int n = inputNumbers.size();
+    vector<int> current;
+    vector<vector<int>> allSubset;
+    helper(inputNumbers, 0, n, current, allSubset);
+    for (int i = 0; i < allSubset.size(); i++) {
+        for (int j = 0; j < allSubset[i].size(); j++) {
+            cout << allSubset[i][j] << " ";
+        }
+        cout << "\\n";
+    }
+    return 0;
+}
+`;
+    const trace = runCode(code);
+    const last = trace[trace.length - 1];
+    expect(last.output).toBe("\n2 \n1 \n1 2 \n");
+    // Verify trace snapshots actually grow step by step
+    const earlyEvent = trace.find((e) => e.type === "CALL" && e.activeFrameId === "frame_2");
+    expect(earlyEvent?.stack[0].locals.allSubset).toEqual([]);
+  });
 });

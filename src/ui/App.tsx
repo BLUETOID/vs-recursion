@@ -4,6 +4,7 @@ import { CallStack } from "./CallStack";
 import { Output } from "./Output";
 import { Controls } from "./Controls";
 import { RecursionTree } from "./RecursionTree";
+import { formatValue } from "./formatValue";
 import { runInterpreter } from "../interpreter";
 import type { TraceEvent } from "../interpreter";
 import { PRESET_EXAMPLES } from "../examples/presets";
@@ -292,7 +293,7 @@ export const App: React.FC = () => {
                   className={`breadcrumb-item ${i === currentEvent.stack.length - 1 ? "active" : ""}`}
                   onClick={() => handleSeekFrame(frame.id)}
                 >
-                  {frame.fn}({Object.values(frame.args).join(",")})
+                  {frame.fn}({Object.values(frame.args).map((v) => formatValue(v, { compact: true, maxArrayItems: 2 })).join(", ")})
                 </button>
               </React.Fragment>
             ))}
@@ -432,6 +433,7 @@ export const App: React.FC = () => {
                   returnValue={currentEvent.returnValue}
                   isBaseCase={currentEvent.isBaseCase}
                   staticVars={currentEvent.staticVars}
+                  recentChange={currentEvent.recentChange}
                 />
               ) : (
                 <RecursionTree

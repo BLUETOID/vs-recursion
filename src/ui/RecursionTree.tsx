@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from "react";
 import type { TreeNodeSnapshot } from "../interpreter";
+import { formatValue } from "./formatValue";
 import {
   GitBranch,
   CircleDashed,
@@ -56,18 +57,7 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
 
     for (const node of treeNodes) {
       const argsStr = Object.values(node.args)
-        .map((v) => {
-          if (typeof v === "string") {
-            return JSON.stringify(v.length > 12 ? v.slice(0, 10) + "…" : v);
-          }
-          if (Array.isArray(v)) {
-            if (v.length > 4) {
-              return `[${v.slice(0, 3).map((x) => JSON.stringify(x)).join(",")},…]`;
-            }
-            return JSON.stringify(v);
-          }
-          return JSON.stringify(v);
-        })
+        .map((v) => formatValue(v, { compact: true, maxArrayItems: 3, maxDepth: 2 }))
         .join(", ");
 
       const label = `${node.fn}(${argsStr})`;
@@ -77,7 +67,7 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
       let retStr: string | undefined;
       let retWidth: number | undefined;
       if (node.status === "returned" && node.returnValue !== undefined) {
-        retStr = `= ${JSON.stringify(node.returnValue)}`;
+        retStr = `= ${formatValue(node.returnValue, { compact: true, maxArrayItems: 3 })}`;
         retWidth = Math.max(54, Math.ceil(retStr.length * 7.0) + 18);
       }
 
@@ -453,7 +443,7 @@ export const RecursionTree: React.FC<RecursionTreeProps> = ({
                       }}
                       style={{ cursor: onSelectNode ? "pointer" : "default" }}
                     >
-                      <title>{node.fn}({Object.entries(node.args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")})</title>
+                      <title>{node.fn}({Object.entries(node.args).map(([k, v]) => `${k}=${formatValue(v)}`).join(", ")})</title>
 
                       {/* Main Node Background Card */}
                       <rect

@@ -14,6 +14,23 @@ import type {
   VarChange,
 } from "./trace";
 
+export function cloneValue<T>(val: T): T {
+  if (val === null || val === undefined) return val;
+  if (typeof val === "number" || typeof val === "string" || typeof val === "boolean") return val;
+  if (Array.isArray(val)) {
+    return val.map((item) => cloneValue(item)) as unknown as T;
+  }
+  if (typeof val === "object") {
+    if ((val as any).__iter) return { ...val };
+    const res: Record<string, any> = {};
+    for (const [k, v] of Object.entries(val)) {
+      res[k] = cloneValue(v);
+    }
+    return res as T;
+  }
+  return val;
+}
+
 class ReturnSignal {
   value: any;
   constructor(value: any) {
@@ -207,9 +224,9 @@ export class Evaluator {
     for (let i = 0; i < fn.params.length; i++) {
       const p = fn.params[i];
       let val = args[i];
-      // If passed by value and is array, clone it to mirror C++ pass-by-value semantics
-      if (!p.isRef && Array.isArray(val)) {
-        val = JSON.parse(JSON.stringify(val));
+      // If passed by value and is array or object, clone it to mirror C++ pass-by-value semantics
+      if (!p.isRef) {
+        val = cloneValue(val);
       }
       argsRecord[p.name] = val;
       if (p.isConst) {
@@ -518,10 +535,21 @@ export class Evaluator {
       }
 
       case "ExpressionStatement": {
-        this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
-          explanation: `Executing statement on line ${stmt.line}.`,
-        });
-        this.evaluateExpression(stmt.expression);
+        if (stmt.expression.type === "CallExpression") {
+          this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
+            explanation: `Calling ${stmt.expression.callee}() on line ${stmt.line}.`,
+          });
+          this.evaluateExpression(stmt.expression);
+        } else {
+          this.evaluateExpression(stmt.expression);
+          const change = this.recentChange;
+          const explanation = change
+            ? `Updated ${change.name} on line ${stmt.line}.`
+            : `Executing statement on line ${stmt.line}.`;
+          this.recordEvent("LINE", stmt.line, undefined, undefined, undefined, {
+            explanation,
+          });
+        }
         break;
       }
 
@@ -595,7 +623,7 @@ export class Evaluator {
             return obj.length === 0;
           }
           if (methodName === "push_back" || methodName === "emplace_back") {
-            obj.push(args[0]);
+            obj.push(cloneValue(args[0]));
             this.recordObjectMutation(expr.object);
             return;
           }
@@ -912,22 +940,23 @@ export class Evaluator {
   }
 
   private assignToTarget(target: Expression, value: any, line: number): void {
+    const cloned = cloneValue(value);
     if (target.type === "Identifier") {
-      this.setVariable(target.name, value, line);
+      this.setVariable(target.name, cloned, line);
     } else if (target.type === "IndexExpression") {
       const obj = this.evaluateExpression(target.object);
       const idx = this.evaluateExpression(target.index);
       const numIdx = Number(idx);
 
       if (typeof obj === "string") {
-        const char = String(value).charAt(0) || "";
+        const char = String(cloned).charAt(0) || "";
         const updated = obj.substring(0, numIdx) + char + obj.substring(numIdx + 1);
         this.assignToTarget(target.object, updated, line);
       } else if (Array.isArray(obj)) {
-        obj[numIdx] = value;
+        obj[numIdx] = cloned;
         this.recordObjectMutation(target.object);
       } else if (typeof obj === "object" && obj !== null) {
-        obj[idx] = value;
+        obj[idx] = cloned;
         this.recordObjectMutation(target.object);
       } else {
         throw new Error(`Cannot assign to index on line ${line}`);
@@ -935,7 +964,7 @@ export class Evaluator {
     } else if (target.type === "MemberExpression") {
       const obj = this.evaluateExpression(target.object);
       if (typeof obj === "object" && obj !== null) {
-        obj[target.property] = value;
+        obj[target.property] = cloned;
         this.recordObjectMutation(target.object);
       } else {
         throw new Error(`Cannot assign to property '${target.property}' on line ${line}`);
@@ -970,7 +999,7 @@ export class Evaluator {
       this.recentChange = {
         name,
         scope,
-        newValue: Array.isArray(val) ? [...val] : val,
+        newValue: cloneValue(val),
         fnName: currentFrame?.fn,
       };
     }
@@ -1070,13 +1099,14 @@ export class Evaluator {
   }
 
   private setLocalVariable(name: string, value: any): void {
+    const cloned = cloneValue(value);
     if (this.callStack.length > 0) {
       const currentFrame = this.callStack[this.callStack.length - 1];
-      currentFrame.locals[name] = value;
+      currentFrame.locals[name] = cloned;
     } else {
       this.globals[name] = {
         name,
-        value,
+        value: cloned,
         varType: typeof value === "number" ? "int" : typeof value === "boolean" ? "bool" : "string",
       };
     }
@@ -1084,6 +1114,7 @@ export class Evaluator {
 
   private setVariable(name: string, value: any, line: number): void {
     let oldValue: any = undefined;
+    const cloned = cloneValue(value);
 
     if (this.callStack.length > 0) {
       const currentFrame = this.callStack[this.callStack.length - 1];
@@ -1092,41 +1123,41 @@ export class Evaluator {
         const b = bindings.get(name)!;
         // Keep current frame args reflection up to date
         if (name in currentFrame.args) {
-          currentFrame.args[name] = value;
+          currentFrame.args[name] = cloned;
         }
         if (b.targetFrame) {
           if (b.name in b.targetFrame.locals) {
             oldValue = b.targetFrame.locals[b.name];
-            b.targetFrame.locals[b.name] = value;
+            b.targetFrame.locals[b.name] = cloned;
             this.recentChange = {
               name: b.name,
               scope: "local",
               oldValue,
-              newValue: value,
+              newValue: cloned,
               fnName: b.targetFrame.fn,
             };
             return;
           }
           if (b.name in b.targetFrame.args) {
             oldValue = b.targetFrame.args[b.name];
-            b.targetFrame.args[b.name] = value;
+            b.targetFrame.args[b.name] = cloned;
             this.recentChange = {
               name: b.name,
               scope: "arg",
               oldValue,
-              newValue: value,
+              newValue: cloned,
               fnName: b.targetFrame.fn,
             };
             return;
           }
         } else if (b.name in this.globals) {
           oldValue = this.globals[b.name].value;
-          this.globals[b.name].value = value;
+          this.globals[b.name].value = cloned;
           this.recentChange = {
             name: b.name,
             scope: "global",
             oldValue,
-            newValue: value,
+            newValue: cloned,
           };
           return;
         }
@@ -1137,12 +1168,12 @@ export class Evaluator {
           throw new Error(`Cannot modify const variable '${name}' on line ${line}`);
         }
         oldValue = currentFrame.locals[name];
-        currentFrame.locals[name] = value;
+        currentFrame.locals[name] = cloned;
         this.recentChange = {
           name,
           scope: "local",
           oldValue,
-          newValue: value,
+          newValue: cloned,
           fnName: currentFrame.fn,
         };
         return;
@@ -1153,12 +1184,12 @@ export class Evaluator {
           throw new Error(`Cannot modify const parameter '${name}' on line ${line}`);
         }
         oldValue = currentFrame.args[name];
-        currentFrame.args[name] = value;
+        currentFrame.args[name] = cloned;
         this.recentChange = {
           name,
           scope: "arg",
           oldValue,
-          newValue: value,
+          newValue: cloned,
           fnName: currentFrame.fn,
         };
         return;
@@ -1171,12 +1202,12 @@ export class Evaluator {
           throw new Error(`Cannot modify const static variable '${name}' on line ${line}`);
         }
         oldValue = sInfo.value;
-        sInfo.value = value;
+        sInfo.value = cloned;
         this.recentChange = {
           name,
           scope: "static",
           oldValue,
-          newValue: value,
+          newValue: cloned,
           fnName: currentFrame.fn,
         };
         return;
@@ -1189,12 +1220,12 @@ export class Evaluator {
         throw new Error(`Cannot modify const static variable '${name}' on line ${line}`);
       }
       oldValue = sInfo.value;
-      sInfo.value = value;
+      sInfo.value = cloned;
       this.recentChange = {
         name,
         scope: "static",
         oldValue,
-        newValue: value,
+        newValue: cloned,
       };
       return;
     }
@@ -1204,12 +1235,12 @@ export class Evaluator {
         throw new Error(`Cannot modify const variable '${name}' on line ${line}`);
       }
       oldValue = this.globals[name].value;
-      this.globals[name].value = value;
+      this.globals[name].value = cloned;
       this.recentChange = {
         name,
         scope: "global",
         oldValue,
-        newValue: value,
+        newValue: cloned,
       };
       return;
     }
@@ -1252,16 +1283,16 @@ export class Evaluator {
       const fStatics: Record<string, any> = {};
       for (const [k, v] of this.staticStorage.entries()) {
         if (v.fnName === f.fn || k.startsWith(`${f.fn}::`)) {
-          fStatics[v.name] = v.value;
+          fStatics[v.name] = cloneValue(v.value);
         }
       }
       return {
         id: f.id,
         fn: f.fn,
-        args: { ...f.args },
-        locals: { ...f.locals },
+        args: cloneValue(f.args),
+        locals: cloneValue(f.locals),
         line: f.line,
-        returnValue: f.returnValue,
+        returnValue: cloneValue(f.returnValue),
         callerFn: f.callerFn,
         callerLine: f.callerLine,
         constVars: fConsts,
@@ -1272,17 +1303,18 @@ export class Evaluator {
     // Deep clone tree nodes
     const treeNodesSnapshot: TreeNodeSnapshot[] = this.treeNodes.map((n) => ({
       ...n,
-      args: { ...n.args },
+      args: cloneValue(n.args),
+      returnValue: cloneValue(n.returnValue),
     }));
 
     const staticVarsSnapshot: Record<string, StaticVarInfo> = {};
     for (const [k, v] of this.staticStorage.entries()) {
-      staticVarsSnapshot[k] = { ...v };
+      staticVarsSnapshot[k] = { ...v, value: cloneValue(v.value) };
     }
 
     const globalsSnapshot: Record<string, GlobalVarInfo> = {};
     for (const [k, v] of Object.entries(this.globals)) {
-      globalsSnapshot[k] = { ...v };
+      globalsSnapshot[k] = { ...v, value: cloneValue(v.value) };
     }
 
     const event: TraceEvent = {
@@ -1303,9 +1335,10 @@ export class Evaluator {
       callerLine: extra?.callerLine || currentFrame?.callerLine,
       staticVars: staticVarsSnapshot,
       globals: globalsSnapshot,
-      recentChange: this.recentChange ? { ...this.recentChange } : undefined,
+      recentChange: this.recentChange ? cloneValue(this.recentChange) : undefined,
     };
 
     this.trace.push(event);
+    this.recentChange = undefined;
   }
 }

@@ -1,5 +1,6 @@
-import React from "react";
-import type { Frame, EventType, StaticVarInfo } from "../interpreter";
+import React, { useState } from "react";
+import type { Frame, EventType, StaticVarInfo, VarChange } from "../interpreter";
+import { formatValue, isTruncatedValue } from "./formatValue";
 import {
   Layers,
   ArrowDown,
@@ -18,6 +19,7 @@ interface CallStackProps {
   returnValue?: any;
   isBaseCase?: boolean;
   staticVars?: Record<string, StaticVarInfo>;
+  recentChange?: VarChange;
 }
 
 export const CallStack: React.FC<CallStackProps> = ({
@@ -27,9 +29,76 @@ export const CallStack: React.FC<CallStackProps> = ({
   returnValue,
   isBaseCase,
   staticVars,
+  recentChange,
 }) => {
   const reversedStack = [...stack].reverse();
   const staticEntries = Object.entries(staticVars || {});
+  const [expandedChips, setExpandedChips] = useState<Set<string>>(new Set());
+
+  const toggleChipExpand = (key: string) => {
+    setExpandedChips((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const renderVarChip = (
+    category: "arg" | "local" | "static",
+    name: string,
+    val: any,
+    frameId: string,
+    isTop: boolean,
+    isConst = false,
+    scopePrefix?: string
+  ) => {
+    const chipKey = `${frameId}-${category}-${name}`;
+    const isExpanded = expandedChips.has(chipKey);
+    const isTruncated = isTruncatedValue(val);
+    const isUpdated =
+      isTop &&
+      recentChange?.name === name &&
+      (recentChange.scope === category || (category === "arg" && recentChange.scope === "local"));
+
+    const displayVal = isExpanded ? JSON.stringify(val) : formatValue(val);
+    const fullValJson = JSON.stringify(val, null, 2);
+
+    return (
+      <div
+        key={chipKey}
+        className={`var-chip ${category}-chip ${isUpdated ? "chip-just-updated" : ""} ${
+          isTruncated ? "chip-expandable" : ""
+        }`}
+        title={
+          isTruncated
+            ? `Full value:\n${fullValJson}\n(Click to ${isExpanded ? "collapse" : "expand"})`
+            : `Value: ${JSON.stringify(val)}`
+        }
+        onClick={isTruncated ? () => toggleChipExpand(chipKey) : undefined}
+      >
+        {isUpdated && <span className="chip-badge-updated">UPDATED</span>}
+        {category === "static" && <span className="chip-badge-static">STATIC</span>}
+        {isConst && (
+          <span title="Const parameter/variable">
+            <Lock className="icon-xs text-amber" />
+          </span>
+        )}
+        {scopePrefix && <span className="static-chip-scope">{scopePrefix}</span>}
+        <span className="chip-key">{name}</span>
+        <span className="chip-separator">=</span>
+        <span className="chip-val">{displayVal}</span>
+        {isTruncated && (
+          <span className="chip-expand-indicator" title={isExpanded ? "Collapse" : "Expand"}>
+            {isExpanded ? "▲" : "…"}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="call-stack-panel" id="call-stack-panel">
@@ -69,15 +138,17 @@ export const CallStack: React.FC<CallStackProps> = ({
             <span className="static-strip-title">Static Storage (Shared Across All Frames):</span>
           </div>
           <div className="static-chips-list">
-            {staticEntries.map(([key, info]) => (
-              <div key={key} className="static-memory-chip" title="Persists in memory across recursion">
-                <span className="static-chip-scope">{info.fnName ? `${info.fnName}::` : "global::"}</span>
-                <span className="static-chip-name">{info.name}</span>
-                <span className="chip-separator">=</span>
-                <span className="static-chip-val">{JSON.stringify(info.value)}</span>
-                {info.isConst && <span className="chip-const-tag">CONST</span>}
-              </div>
-            ))}
+            {staticEntries.map(([key, info]) =>
+              renderVarChip(
+                "static",
+                info.name,
+                info.value,
+                "global-static",
+                true,
+                info.isConst,
+                info.fnName ? `${info.fnName}::` : "global::"
+              )
+            )}
           </div>
         </div>
       )}
@@ -112,7 +183,7 @@ export const CallStack: React.FC<CallStackProps> = ({
                     <span className="fn-args-inline">
                       (
                       {Object.entries(frame.args)
-                        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+                        .map(([k, v]) => `${k}=${formatValue(v, { compact: true, maxArrayItems: 3 })}`)
                         .join(", ")}
                       )
                     </span>
@@ -137,7 +208,7 @@ export const CallStack: React.FC<CallStackProps> = ({
                     <CornerDownLeft className="icon-xs" />
                     <span>{isBaseCase ? "Base Case Return:" : "Return value:"}</span>
                     <code className="return-val">
-                      {returnValue !== undefined ? JSON.stringify(returnValue) : "void"}
+                      {returnValue !== undefined ? formatValue(returnValue) : "void"}
                     </code>
                     {isBaseCase && <span className="base-case-badge">BASE CASE</span>}
                   </div>
@@ -151,14 +222,9 @@ export const CallStack: React.FC<CallStackProps> = ({
                         <Database className="icon-xs inline-icon" /> static:
                       </span>
                       <div className="var-chips">
-                        {frameStatics.map(([k, v]) => (
-                          <div key={k} className="var-chip static-chip" title="Shared static variable across all calls">
-                            <span className="chip-badge-static">STATIC</span>
-                            <span className="chip-key">{k}</span>
-                            <span className="chip-separator">=</span>
-                            <span className="chip-val text-amber">{JSON.stringify(v)}</span>
-                          </div>
-                        ))}
+                        {frameStatics.map(([k, v]) =>
+                          renderVarChip("static", k, v, frame.id, isTop, false)
+                        )}
                       </div>
                     </div>
                   )}
@@ -167,18 +233,9 @@ export const CallStack: React.FC<CallStackProps> = ({
                     <div className="var-group">
                       <span className="var-group-label">args:</span>
                       <div className="var-chips">
-                        {Object.entries(frame.args).map(([k, v]) => (
-                          <div key={k} className="var-chip arg-chip">
-                            {constSet.has(k) && (
-                              <span title="Const parameter">
-                                <Lock className="icon-xs text-amber" />
-                              </span>
-                            )}
-                            <span className="chip-key">{k}</span>
-                            <span className="chip-separator">=</span>
-                            <span className="chip-val">{JSON.stringify(v)}</span>
-                          </div>
-                        ))}
+                        {Object.entries(frame.args).map(([k, v]) =>
+                          renderVarChip("arg", k, v, frame.id, isTop, constSet.has(k))
+                        )}
                       </div>
                     </div>
                   )}
@@ -187,18 +244,9 @@ export const CallStack: React.FC<CallStackProps> = ({
                     <div className="var-group">
                       <span className="var-group-label">locals:</span>
                       <div className="var-chips">
-                        {Object.entries(frame.locals).map(([k, v]) => (
-                          <div key={k} className="var-chip local-chip">
-                            {constSet.has(k) && (
-                              <span title="Const variable">
-                                <Lock className="icon-xs text-amber" />
-                              </span>
-                            )}
-                            <span className="chip-key">{k}</span>
-                            <span className="chip-separator">=</span>
-                            <span className="chip-val">{JSON.stringify(v)}</span>
-                          </div>
-                        ))}
+                        {Object.entries(frame.locals).map(([k, v]) =>
+                          renderVarChip("local", k, v, frame.id, isTop, constSet.has(k))
+                        )}
                       </div>
                     </div>
                   )}
@@ -212,3 +260,4 @@ export const CallStack: React.FC<CallStackProps> = ({
   );
 };
 
+export default CallStack;
